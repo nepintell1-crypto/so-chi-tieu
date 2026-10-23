@@ -2,7 +2,7 @@
 
 Trợ lý cá nhân chạy trên điện thoại (Android, iPhone) và máy tính: việc cần làm, lịch tháng, mua sắm và thu chi trong một app. Nâng cấp từ app **Sổ chi tiêu**; cài như một app từ trình duyệt, dùng được cả khi không có mạng.
 
-## Chức năng (giai đoạn 1 và 2)
+## Chức năng (giai đoạn 1, 2 và 3)
 - **Hôm nay**: tiền đã chi trong ngày, còn được chi theo ngân sách, cảnh báo 80%, việc đến hạn (dời sang mai 1 chạm), nhắc ghi chi, thẻ Tổng kết ngày từ 22:00.
 - **Lịch**: lịch tháng, mỗi ô ngày ghi số tiền đã chi và chấm màu báo việc, lịch hẹn, hoá đơn đến hạn; chạm ngày để xem chi tiết.
 - **Lịch hẹn**: giờ bắt đầu–kết thúc hoặc cả ngày, địa điểm, lặp lại (tuần, tháng, năm), nhắc trước (đúng giờ đến 1 ngày), đính kèm giấy mời.
@@ -13,6 +13,7 @@ Trợ lý cá nhân chạy trên điện thoại (Android, iPhone) và máy tín
 - **Việc**: thẻ Công việc / Cá nhân / Việc nhà, ưu tiên Cao / Vừa / Thấp, hạn và giờ, lặp lại (ngày, tuần, tháng, cuối tháng), chi phí dự kiến, đính kèm ảnh chụp và tài liệu (PDF, Word, Excel…).
 - **Mua sắm**: gõ nhiều món cách nhau dấu phẩy, tự xếp nhóm hàng, nhớ giá lần trước. Tích "Đã mua" thì chọn: ghi riêng món đó, gộp cả lần đi chợ thành 1 khoản, hoặc không ghi.
 - **Tiền**: Tổng quan, Sổ thu chi, Ngân sách, Báo cáo năm + xuất Excel theo mẫu cũ (Ngày | KH | Nội dung thu chi | Thu+/Chi- | Số tiền | Ghi chú). Khoản mục `T` (Công ty) có trạng thái Chờ hoàn / Đã hoàn.
+- **Bảo mật**: khoá mã PIN 4–6 số khi mở app và khi quay lại sau một lúc (ngay / 1 / 5 / 15 phút); nhập sai 5 lần phải chờ. Quên PIN chỉ có cách xoá dữ liệu trên máy rồi khôi phục từ file sao lưu. File sao lưu có thể đặt mật khẩu (AES-256-GCM, khoá tạo bằng PBKDF2-SHA256).
 - **Cài đặt**: thêm danh mục thu chi (mã 1 chữ cái) và nhóm hàng; mục đã có dữ liệu chỉ ẩn, không xoá. Sao lưu (nhẹ hoặc kèm tệp), khôi phục cả file sao lưu của Sổ chi tiêu cũ.
 
 Danh mục mặc định: `+` Thu nhập, `A` Ăn chơi, `C` Thiết yếu cá nhân, `G` Gia đình, `K` Chi khác, `T` Công ty, `B` Cho con.

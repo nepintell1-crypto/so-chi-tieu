@@ -1,4 +1,5 @@
 /* MyLife Hub (nâng cấp từ Sổ chi tiêu cá nhân)
+   Giai đoạn 3: khoá mã PIN khi mở app / quay lại sau một lúc, file sao lưu có mật khẩu (AES-256-GCM, khoá từ PBKDF2).
    Giai đoạn 2: lịch hẹn (lặp lại, nhắc trước), hoá đơn định kỳ (bấm Đã trả là ghi chi, tự sang kỳ sau),
    Tập trung 60/5 phút, nhắc việc theo quy tắc + thông báo trên máy khi app đang mở.
    Giai đoạn 1: tab Hôm nay, Lịch tháng, Việc (thẻ, ưu tiên, hạn, lặp lại, đính kèm ảnh/tài liệu),
@@ -26,6 +27,9 @@
   var BILL_REMIND = [['0', 'Đúng ngày'], ['1', 'Trước 1 ngày'], ['3', 'Trước 3 ngày'], ['5', 'Trước 5 ngày'], ['7', 'Trước 7 ngày']];
   var BILL_PRESETS = [['Tiền điện', 'G'], ['Tiền nước', 'G'], ['Internet', 'G'], ['Điện thoại', 'C'], ['Học phí', 'B'], ['Bảo hiểm', 'K']];
   var FOCUS_WORK = [25, 45, 60, 90], FOCUS_BREAK = [5, 10, 15];
+  var LOCK_AFTER = [['0', 'Mỗi lần rời app'], ['1', 'Sau 1 phút'], ['5', 'Sau 5 phút'], ['15', 'Sau 15 phút']];
+  var PIN_KEYS = ['pinHash', 'pinSalt', 'pinIter', 'pinLen', 'pinFails', 'pinWait', 'lockAfter'];
+  var PIN_ITER = 150000, BACKUP_ITER = 250000;
   var DOC_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
   // ---------- Danh mục (đọc từ dữ liệu, anh thêm được mục mới) ----------
@@ -274,6 +278,8 @@
     taskFilter: 'all', showDone: false, calMonth: null, calDay: null,
     draft: null, tdraft: null, sdraft: null, edraft: null, bdraft: null, errors: {}, confirmDelete: false,
     focusTask: '', focusWork: 0, focusBreak: 0, focusBack: 'today',
+    locked: false, pinEntry: '', pinBusy: false, pinMsg: '', pinForgot: 0, pinMode: '', hiddenAt: 0, pendingAdd: '',
+    bkPass: '', bkPass2: '',
     sheet: null, viewer: null, attBusy: 0, lastSaved: null,
     year: null, exporting: false, exportMsg: '', restore: null, dataMsg: '', storageInfo: '', setMsg: ''
   };
@@ -306,7 +312,9 @@
     cart: svg('<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.5 12h11L21 7H6.2"/>', 18),
     bell: svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>', 18),
     focus: svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>', 18),
-    pin: svg('<path d="M12 21s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="9" r="2.5"/>', 12)
+    pin: svg('<path d="M12 21s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="9" r="2.5"/>', 12),
+    lock: svg('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', 18),
+    back: svg('<path d="M21 6H9l-6 6 6 6h12z"/><path d="M17 10l-4 4M13 10l4 4"/>', 24)
   };
 
   // ---------- Phần dùng chung ----------
@@ -1146,7 +1154,12 @@
         '</div>';
     }).join('');
     var r = ui.restore;
-    var confirm = r
+    var confirm = r && r.kind === 'enc'
+      ? '<form class="confirm" id="unlockform" role="alert"><span>File sao lưu ngày ' + esc(r.savedAt && validDate(r.savedAt) ? r.savedAt.split('-').reverse().join('/') : '?') + ' có mật khẩu. Nhập mật khẩu để mở.</span>' +
+        '<input id="rs-pass" type="password" autocomplete="current-password" aria-label="Mật khẩu file sao lưu" class="sin">' +
+        '<div class="row"><button type="button" class="btn ghost" data-action="cancel-restore">Huỷ</button>' +
+        '<button type="submit" class="btn">' + (ui.restoreBusy ? 'Đang mở…' : 'Mở file') + '</button></div></form>'
+      : r
       ? '<div class="confirm" role="alert"><span>Thay ' + (r.kind === 'v1' ? 'toàn bộ khoản thu chi và ngân sách hiện tại (' + S.expenses.length + ' khoản) bằng ' + r.data.expenses.length + ' khoản'
           : 'toàn bộ dữ liệu hiện tại bằng bản sao lưu (' + r.data.expenses.length + ' khoản thu chi, ' + r.data.tasks.length + ' việc' + (r.fileCount ? ', ' + r.fileCount + ' tệp' : '') + ')') +
         ' trong file ngày ' + esc(r.savedAt && validDate(r.savedAt) ? r.savedAt.split('-').reverse().join('/') : '?') + '? Không thể hoàn tác.</span>' +
@@ -1182,10 +1195,15 @@
         '<label class="srow"><span class="grow">Thời gian làm mặc định</span><select class="ssel" data-setting="focusWork">' + options(FOCUS_WORK.map(function (m) { return [String(m), m + ' phút']; }), S.settings.focusWork || 60) + '</select></label>' +
         '<label class="srow"><span class="grow">Thời gian nghỉ</span><select class="ssel" data-setting="focusBreak">' + options(FOCUS_BREAK.map(function (m) { return [String(m), m + ' phút']; }), S.settings.focusBreak || 5) + '</select></label>' +
       '</section>' +
+      securitySection() +
       '<section class="card"><h2>Dữ liệu của anh</h2>' +
         '<p class="lead">Nơi lưu: ' + mode + (ui.storageInfo ? ' ' + esc(ui.storageInfo) : '') + '</p>' +
         '<p class="lead">Dữ liệu chỉ nằm trên máy này. Nên sao lưu mỗi tháng một lần và cất file ở Google Drive hoặc Zalo “Cloud của tôi”.' +
           (S.settings.lastBackup ? ' Lần gần nhất: ' + esc(S.settings.lastBackup.split('-').reverse().join('/')) + '.' : '') + '</p>' +
+        '<div class="field"><span>Mật khẩu cho file sao lưu (không bắt buộc)</span><div class="row2">' +
+          '<input id="bk-pass" type="password" autocomplete="new-password" placeholder="Mật khẩu" aria-label="Mật khẩu file sao lưu" value="' + esc(ui.bkPass) + '" data-bk="bkPass">' +
+          '<input id="bk-pass2" type="password" autocomplete="new-password" placeholder="Nhập lại" aria-label="Nhập lại mật khẩu" value="' + esc(ui.bkPass2) + '" data-bk="bkPass2"></div>' +
+          '<span class="hint">Có mật khẩu thì file được mã hoá (AES-256), người khác có file cũng không đọc được. Quên mật khẩu thì không ai mở được file, nên ghi lại và cất kỹ.</span></div>' +
         '<button class="btn ghost with-icon" data-action="backup" data-files="0">' + I.download + 'Sao lưu dữ liệu (nhẹ, không kèm tệp)</button>' +
         (S.attachments.length ? '<button class="btn ghost with-icon" data-action="backup" data-files="1">' + I.download + 'Sao lưu kèm ' + S.attachments.length + ' tệp đính kèm</button>' : '') +
         '<label class="btn ghost with-icon file-btn" for="restore-file">Khôi phục từ file sao lưu' +
@@ -1193,7 +1211,57 @@
         confirm +
         (ui.dataMsg ? '<p class="lead" role="status">' + esc(ui.dataMsg) + '</p>' : '') +
       '</section>' +
-      '<p class="lead center">MyLife Hub · giai đoạn 2</p>';
+      '<p class="lead center">MyLife Hub · giai đoạn 3</p>';
+  }
+
+  function securitySection() {
+    var st = S.settings, on = !!st.pinHash, mode = ui.pinMode;
+    var form = '';
+    if (mode) {
+      var pinIn = function (id, label, ac) {
+        return '<label class="field" for="' + id + '">' + label + '<input id="' + id + '" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="' + ac + '" class="pin-in"></label>';
+      };
+      form = '<form class="form pin-form" id="pinform" novalidate>' +
+        (mode !== 'set' ? pinIn('pin-cur', 'Mã PIN hiện tại', 'current-password') : '') +
+        (mode !== 'off' ? pinIn('pin-new', 'Mã PIN mới (4 đến 6 số)', 'new-password') + pinIn('pin-new2', 'Nhập lại mã PIN mới', 'new-password') : '') +
+        '<div class="row2"><button type="button" class="btn ghost" data-action="pin-cancel">Huỷ</button>' +
+        '<button type="submit" class="btn' + (mode === 'off' ? ' danger solid' : '') + '">' + (mode === 'off' ? 'Tắt mã PIN' : 'Lưu mã PIN') + '</button></div></form>';
+    }
+    return '<section class="card"><h2>Bảo mật</h2>' +
+      '<p class="lead">Mã PIN chặn người khác mở app trên máy này. Dữ liệu trong trình duyệt không được mã hoá, nên vẫn nên đặt khoá màn hình cho điện thoại.</p>' +
+      '<div class="srow"><span class="grow">' + I.lock + ' Khoá mã PIN: <b>' + (on ? 'đang bật' : 'đang tắt') + '</b></span>' +
+        (mode ? '' : on ? '<button class="mini-btn" data-action="pin-mode" data-m="change">Đổi mã</button><button class="mini-btn" data-action="pin-mode" data-m="off">Tắt</button>'
+          : '<button class="mini-btn gold" data-action="pin-mode" data-m="set">Đặt mã PIN</button>') + '</div>' +
+      (on ? '<label class="srow"><span class="grow">Khoá lại khi rời app</span><select class="ssel" data-setting="lockAfter">' + options(LOCK_AFTER, st.lockAfter == null ? 1 : st.lockAfter) + '</select></label>' : '') +
+      form +
+      '<p id="pin-note" class="note' + (/^Đã/.test(ui.pinMsg) ? ' ok' : '') + '" role="status"' + (ui.pinMsg ? '' : ' hidden') + '>' + esc(ui.pinMsg) + '</p>' +
+      '</section>';
+  }
+
+  // ---------- Màn hình khoá ----------
+  function viewLock() {
+    var st = S.settings, len = st.pinLen || 4, wait = Math.max(0, (st.pinWait || 0) - Date.now());
+    if (ui.pinForgot) {
+      return '<section class="lock">' + I.lock + '<h1>Quên mã PIN?</h1>' +
+        (ui.pinForgot === 1
+          ? '<p>Mã PIN không lấy lại được. Cách duy nhất là xoá toàn bộ dữ liệu của app trên máy này, rồi khôi phục từ file sao lưu (nếu có).</p>' +
+            '<button class="btn danger" data-action="pin-wipe-ask">Xoá dữ liệu trên máy này</button><button class="btn ghost" data-action="pin-forgot-back">Quay lại nhập mã</button>'
+          : '<p><b>Chắc chắn xoá?</b> Toàn bộ khoản thu chi, việc, lịch hẹn, hoá đơn và tệp đính kèm trên máy này sẽ mất. Không thể hoàn tác.</p>' +
+            '<button class="btn danger solid" data-action="pin-wipe">Xoá hết</button><button class="btn ghost" data-action="pin-forgot-back">Huỷ</button>') +
+        '</section>';
+    }
+    var dots = '';
+    for (var i = 0; i < len; i++) dots += '<i class="' + (i < ui.pinEntry.length ? 'on' : '') + '"></i>';
+    var keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'].map(function (k) {
+      if (!k) return '<span></span>';
+      if (k === 'del') return '<button class="key fn" data-action="pin-del" aria-label="Xoá số vừa nhập">' + I.back + '</button>';
+      return '<button class="key num" data-action="pin-key" data-k="' + k + '"' + (wait ? ' disabled' : '') + '>' + k + '</button>';
+    }).join('');
+    return '<section class="lock" aria-label="Màn hình khoá">' + I.lock +
+      '<h1>MyLife Hub</h1><p id="pin-msg" role="status">' + esc(wait ? 'Nhập sai nhiều lần. Thử lại sau ' + Math.ceil(wait / 1000) + ' giây.' : ui.pinMsg || 'Nhập mã PIN') + '</p>' +
+      '<div class="pin-dots" aria-label="Đã nhập ' + ui.pinEntry.length + ' trên ' + len + ' số">' + dots + '</div>' +
+      '<div class="keypad">' + keys + '</div>' +
+      '<button class="link-btn" data-action="pin-forgot">Quên mã PIN?</button></section>';
   }
 
   function notifyRow() {
@@ -1265,6 +1333,10 @@
   }
 
   function render(focusId) {
+    if (ui.locked) {
+      main.innerHTML = viewLock(); tabBar.hidden = true; overlay.innerHTML = ''; document.body.classList.remove('modal-open');
+      return;
+    }
     main.innerHTML = (VIEWS[ui.view] || viewToday)();
     tabBar.innerHTML = tabs();
     tabBar.hidden = !!FORMS[ui.view];
@@ -1278,6 +1350,7 @@
   }
 
   function showToast(msg, undoId) {
+    if (ui.locked) return; // không lộ nội dung khi đang khoá
     toastEl.innerHTML = '<span>' + esc(msg) + '</span>' + (undoId ? '<button class="link-btn" data-action="undo" data-id="' + esc(undoId) + '">Hoàn tác</button>' : '');
     toastEl.hidden = false;
     clearTimeout(toastTimer);
@@ -1993,15 +2066,150 @@
     });
   }
 
+  // ---------- Mã hoá: PIN (băm PBKDF2) và file sao lưu có mật khẩu (AES-256-GCM) ----------
+  var te = new TextEncoder(), td = new TextDecoder();
+  function hasCrypto() { return !!(window.crypto && crypto.subtle && crypto.getRandomValues); }
+  function b64(buf) {
+    var a = new Uint8Array(buf), out = '';
+    for (var i = 0; i < a.length; i += 32768) out += String.fromCharCode.apply(null, a.subarray(i, i + 32768));
+    return btoa(out);
+  }
+  function unb64(str) { var bin = atob(str), a = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; }
+  function randBytes(n) { return crypto.getRandomValues(new Uint8Array(n)); }
+  function pbkdf2(secret, salt, iter) {
+    return crypto.subtle.importKey('raw', te.encode(secret), 'PBKDF2', false, ['deriveBits', 'deriveKey']).then(function (k) {
+      return { k: k, salt: salt, iter: iter };
+    });
+  }
+  function pinHash(pin, saltB64, iter) {
+    return pbkdf2(pin, unb64(saltB64), iter).then(function (o) {
+      return crypto.subtle.deriveBits({ name: 'PBKDF2', salt: o.salt, iterations: o.iter, hash: 'SHA-256' }, o.k, 256);
+    }).then(b64);
+  }
+  function aesKey(pass, salt, iter) {
+    return pbkdf2(pass, salt, iter).then(function (o) {
+      return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: o.salt, iterations: o.iter, hash: 'SHA-256' }, o.k, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    });
+  }
+  function encryptText(text, pass) {
+    var salt = randBytes(16), iv = randBytes(12);
+    return aesKey(pass, salt, BACKUP_ITER).then(function (key) {
+      return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, te.encode(text));
+    }).then(function (ct) {
+      return { cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA256', iter: BACKUP_ITER, salt: b64(salt), iv: b64(iv), data: b64(ct) };
+    });
+  }
+  function decryptText(o, pass) {
+    return aesKey(pass, unb64(o.salt), +o.iter || BACKUP_ITER).then(function (key) {
+      return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(o.iv) }, key, unb64(o.data));
+    }).then(function (pt) { return td.decode(pt); });
+  }
+  function pinFields(st) { var o = {}; PIN_KEYS.forEach(function (k) { if (st[k] != null) o[k] = st[k]; }); return o; }
+
+  function lockNow() {
+    if (!S.settings.pinHash) return;
+    ui.locked = true; ui.pinEntry = ''; ui.pinMsg = ''; ui.pinForgot = 0;
+    toastEl.hidden = true;
+    render();
+  }
+  function unlockDone() {
+    ui.locked = false; ui.pinEntry = ''; ui.pinMsg = '';
+    render();
+    var q = ui.pendingAdd; ui.pendingAdd = '';
+    if (q === 'expense') openExpense(null);
+    else if (q === 'task') openTask(null);
+    else if (q === 'event') openEvent(null);
+    else if (q === 'shop') { ui.taskFilter = 'shop'; go('tasks'); }
+    focusTick(); checkAlerts();
+  }
+  function pinPress(k) {
+    var st = S.settings, len = st.pinLen || 4;
+    if (ui.pinBusy || (st.pinWait || 0) > Date.now()) return;
+    if (k === 'del') ui.pinEntry = ui.pinEntry.slice(0, -1);
+    else if (ui.pinEntry.length < len) ui.pinEntry += k;
+    ui.pinMsg = '';
+    render();
+    if (ui.pinEntry.length < len) return;
+    ui.pinBusy = true;
+    pinHash(ui.pinEntry, st.pinSalt, st.pinIter || PIN_ITER).then(function (h) {
+      ui.pinBusy = false;
+      if (h === st.pinHash) {
+        if (st.pinFails) { st.pinFails = 0; st.pinWait = 0; persist([metaOp('settings')]); }
+        unlockDone();
+        return;
+      }
+      // Sai từ lần thứ 5: chờ 30 giây, mỗi 5 lần sai nữa thì gấp đôi (tối đa 15 phút). Lưu lại để tải lại trang không bỏ qua được.
+      st.pinFails = (st.pinFails || 0) + 1;
+      if (st.pinFails >= 5) st.pinWait = Date.now() + Math.min(900000, 30000 * Math.pow(2, Math.floor((st.pinFails - 5) / 5)));
+      persist([metaOp('settings')]);
+      ui.pinEntry = ''; ui.pinMsg = 'Sai mã PIN' + (st.pinFails < 5 ? ', còn ' + (5 - st.pinFails) + ' lần thử trước khi phải chờ.' : '.');
+      render();
+      try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
+    }, function () { ui.pinBusy = false; ui.pinEntry = ''; ui.pinMsg = 'Không kiểm tra được mã PIN trên trình duyệt này.'; render(); });
+  }
+  // Báo lỗi ngay dưới form, không vẽ lại để các ô đã nhập không bị xoá
+  function pinError(msg, focusId) {
+    var el = document.getElementById('pin-note');
+    ui.pinMsg = msg;
+    if (!el) { render(focusId); return; }
+    el.textContent = msg; el.className = 'note'; el.hidden = false;
+    var f = document.getElementById(focusId);
+    if (f) { f.focus(); if (f.select) f.select(); }
+  }
+  function savePin() {
+    var mode = ui.pinMode, st = S.settings;
+    var val = function (id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    var cur = val('pin-cur'), n1 = val('pin-new'), n2 = val('pin-new2');
+    if (!hasCrypto()) { pinError('Trình duyệt này không hỗ trợ mã hoá, chưa đặt được mã PIN.'); return; }
+    if (mode !== 'off') {
+      if (!/^\d{4,6}$/.test(n1)) { pinError('Mã PIN gồm 4 đến 6 chữ số.', 'pin-new'); return; }
+      if (n1 !== n2) { pinError('Hai lần nhập mã PIN mới chưa khớp.', 'pin-new2'); return; }
+    }
+    var check = mode === 'set' ? Promise.resolve(true) : pinHash(cur, st.pinSalt, st.pinIter || PIN_ITER).then(function (h) { return h === st.pinHash; });
+    check.then(function (ok) {
+      if (!ok) { pinError('Mã PIN hiện tại không đúng.', 'pin-cur'); return null; }
+      if (mode === 'off') {
+        PIN_KEYS.forEach(function (k) { if (k !== 'lockAfter') delete st[k]; });
+        return 'Đã tắt mã PIN.';
+      }
+      var salt = b64(randBytes(16));
+      return pinHash(n1, salt, PIN_ITER).then(function (h) {
+        Object.assign(st, { pinHash: h, pinSalt: salt, pinIter: PIN_ITER, pinLen: n1.length, pinFails: 0, pinWait: 0 });
+        if (st.lockAfter == null) st.lockAfter = 1;
+        return mode === 'set' ? 'Đã đặt mã PIN. Lần sau mở app sẽ hỏi mã.' : 'Đã đổi mã PIN.';
+      });
+    }).then(function (msg) {
+      if (!msg) return;
+      persist([metaOp('settings')]);
+      ui.pinMode = ''; ui.pinMsg = msg; render();
+    });
+  }
+  function wipeAll() {
+    var blank = { expenses: [], budgets: {}, categories: [], tasks: [], shopping: [], groups: [], attachments: [], events: [], bills: [], focus: [], settings: {}, prices: {} };
+    Store.replaceAll(blank, {}).then(function (s) {
+      try { localStorage.removeItem('sochitieu.v1'); } catch (e) {}
+      S = s; refreshCats();
+      ui.month = latestMonth(); ui.year = ui.month.slice(0, 4);
+      ui.locked = false; ui.pinForgot = 0; ui.pinEntry = ''; ui.pendingAdd = '';
+      ui.view = 'settings'; ui.dataMsg = 'Đã xoá dữ liệu trên máy này. Chọn file sao lưu để khôi phục, hoặc bắt đầu ghi mới.';
+      render();
+    }, function () { ui.pinMsg = 'Chưa xoá được dữ liệu. Thử lại.'; ui.pinForgot = 0; render(); });
+  }
+
   // ---------- Sao lưu / khôi phục ----------
   function blobToDataURL(b) {
     return new Promise(function (ok, fail) { var fr = new FileReader(); fr.onload = function () { ok(fr.result); }; fr.onerror = fail; fr.readAsDataURL(b); });
   }
   function backup(withFiles) {
-    var name = 'MyLifeHub_saoluu_' + todayISO() + (withFiles ? '_kemtep' : '') + '.json';
+    var pass = ui.bkPass;
+    if (pass && pass.length < 6) { ui.dataMsg = 'Mật khẩu sao lưu cần ít nhất 6 ký tự.'; render('bk-pass'); return; }
+    if (pass && pass !== ui.bkPass2) { ui.dataMsg = 'Hai lần nhập mật khẩu sao lưu chưa khớp.'; render('bk-pass2'); return; }
+    if (pass && !hasCrypto()) { ui.dataMsg = 'Trình duyệt này không hỗ trợ mã hoá. Bỏ trống mật khẩu để sao lưu thường.'; render(); return; }
+    var name = 'MyLifeHub_saoluu_' + todayISO() + (withFiles ? '_kemtep' : '') + (pass ? '_matkhau' : '') + '.json';
     var data = { expenses: S.expenses, budgets: S.budgets, categories: S.categories, tasks: S.tasks, shopping: S.shopping, groups: S.groups, attachments: S.attachments,
       events: S.events, bills: S.bills, focus: S.focus, settings: Object.assign({}, S.settings, { focusRun: null, notified: {} }), prices: S.prices };
-    ui.dataMsg = withFiles ? 'Đang gom tệp đính kèm…' : ''; render();
+    PIN_KEYS.forEach(function (k) { delete data.settings[k]; }); // mã PIN là của máy này, không đi theo file
+    ui.dataMsg = withFiles ? 'Đang gom tệp đính kèm…' : pass ? 'Đang mã hoá…' : ''; render();
     var files = {};
     var collect = withFiles ? S.attachments.reduce(function (p, a) {
       return p.then(function () {
@@ -2015,10 +2223,13 @@
     }, Promise.resolve()) : Promise.resolve();
     collect.then(function () {
       var payload = JSON.stringify({ app: 'mylife-hub', version: 2, savedAt: todayISO(), data: data, files: withFiles ? files : null });
-      return saveFile(name, payload, 'application/json');
+      if (!pass) return saveFile(name, payload, 'application/json');
+      return encryptText(payload, pass).then(function (o) {
+        return saveFile(name, JSON.stringify(Object.assign({ app: 'mylife-hub', version: 2, encrypted: true, savedAt: todayISO() }, o)), 'application/json');
+      });
     }).then(function () {
       S.settings.lastBackup = todayISO(); persist([metaOp('settings')]);
-      ui.dataMsg = 'Đã tạo file ' + name + ' (' + S.expenses.length + ' khoản thu chi, ' + S.tasks.length + ' việc' + (withFiles ? ', ' + Object.keys(files).filter(function (k) { return !/:t$/.test(k); }).length + ' tệp' : '') + ').';
+      ui.dataMsg = 'Đã tạo file ' + name + ' (' + S.expenses.length + ' khoản thu chi, ' + S.tasks.length + ' việc' + (withFiles ? ', ' + Object.keys(files).filter(function (k) { return !/:t$/.test(k); }).length + ' tệp' : '') + ')' + (pass ? ', có mật khẩu.' : '.');
     }, function (err) {
       ui.dataMsg = err && err.code === 'declined' ? 'Anh đã huỷ lưu file.' : 'Không lưu được file ở chế độ xem này.';
     }).then(function () { if (ui.view === 'settings') render(); });
@@ -2036,27 +2247,46 @@
     var fr = new FileReader();
     fr.onload = function () {
       try {
-        var raw = JSON.parse(fr.result), cats = {};
-        if (raw && raw.app === 'so-chi-tieu' && Array.isArray(raw.items)) {
-          Store.defaults.categories.forEach(function (c) { cats[c.code] = 1; });
-          if (raw.items.some(function (t) { return !validItem(t, cats); })) throw new Error('items');
-          ui.restore = { kind: 'v1', data: { expenses: raw.items.map(Store.fromLegacyItem), budgets: raw.budgets && typeof raw.budgets === 'object' ? raw.budgets : {} }, savedAt: raw.savedAt };
-        } else if (raw && raw.app === 'mylife-hub' && raw.version === 2 && raw.data && Array.isArray(raw.data.expenses)) {
-          var d = raw.data;
-          ['categories', 'tasks', 'shopping', 'groups', 'attachments', 'events', 'bills', 'focus'].forEach(function (k) { if (!Array.isArray(d[k])) d[k] = []; });
-          d.events = d.events.filter(function (x) { return x && typeof x.id === 'string' && validDate(x.date); });
-          d.bills = d.bills.filter(function (x) { return x && typeof x.id === 'string' && validDate(x.nextDue); });
-          (d.categories.length ? d.categories : Store.defaults.categories).forEach(function (c) { cats[c.code] = 1; });
-          if (d.expenses.some(function (t) { return !validItem(t, cats); })) throw new Error('items');
-          ui.restore = { kind: 'v2', data: d, files: raw.files || null, savedAt: raw.savedAt, fileCount: raw.files ? Object.keys(raw.files).filter(function (k) { return !/:t$/.test(k); }).length : 0 };
-        } else throw new Error('format');
+        var raw = JSON.parse(fr.result);
+        if (raw && raw.app === 'mylife-hub' && raw.encrypted && raw.data && raw.iv && raw.salt) ui.restore = { kind: 'enc', raw: raw, savedAt: raw.savedAt };
+        else parseBackup(raw);
       } catch (e) {
         ui.dataMsg = 'File này không phải file sao lưu của app, hoặc đã bị sửa hỏng. Chọn lại file .json do app tạo ra.';
       }
-      render();
+      render(ui.restore && ui.restore.kind === 'enc' ? 'rs-pass' : null);
     };
     fr.onerror = function () { ui.dataMsg = 'Không đọc được file.'; render(); };
     fr.readAsText(file);
+  }
+  function unlockBackup() {
+    var r = ui.restore, el = document.getElementById('rs-pass'), pass = el ? el.value : '';
+    if (!r || r.kind !== 'enc' || !pass || ui.restoreBusy) return;
+    if (!hasCrypto()) { ui.dataMsg = 'Trình duyệt này không hỗ trợ giải mã.'; render(); return; }
+    ui.restoreBusy = true; ui.dataMsg = ''; render();
+    decryptText(r.raw, pass).then(function (text) {
+      ui.restoreBusy = false; ui.restore = null;
+      try { parseBackup(JSON.parse(text)); } catch (e) { ui.dataMsg = 'Đã mở được file nhưng nội dung không hợp lệ.'; }
+      render();
+    }, function () {
+      ui.restoreBusy = false; ui.dataMsg = 'Sai mật khẩu, hoặc file đã bị sửa.'; render('rs-pass');
+    });
+  }
+  // Kiểm tra file sao lưu (đã giải mã nếu có mật khẩu); hợp lệ thì chuẩn bị ui.restore, không thì báo lỗi
+  function parseBackup(raw) {
+    var cats = {};
+    if (raw && raw.app === 'so-chi-tieu' && Array.isArray(raw.items)) {
+      Store.defaults.categories.forEach(function (c) { cats[c.code] = 1; });
+      if (raw.items.some(function (t) { return !validItem(t, cats); })) throw new Error('items');
+      ui.restore = { kind: 'v1', data: { expenses: raw.items.map(Store.fromLegacyItem), budgets: raw.budgets && typeof raw.budgets === 'object' ? raw.budgets : {} }, savedAt: raw.savedAt };
+    } else if (raw && raw.app === 'mylife-hub' && raw.version === 2 && raw.data && Array.isArray(raw.data.expenses)) {
+      var d = raw.data;
+      ['categories', 'tasks', 'shopping', 'groups', 'attachments', 'events', 'bills', 'focus'].forEach(function (k) { if (!Array.isArray(d[k])) d[k] = []; });
+      d.events = d.events.filter(function (x) { return x && typeof x.id === 'string' && validDate(x.date); });
+      d.bills = d.bills.filter(function (x) { return x && typeof x.id === 'string' && validDate(x.nextDue); });
+      (d.categories.length ? d.categories : Store.defaults.categories).forEach(function (c) { cats[c.code] = 1; });
+      if (d.expenses.some(function (t) { return !validItem(t, cats); })) throw new Error('items');
+      ui.restore = { kind: 'v2', data: d, files: raw.files || null, savedAt: raw.savedAt, fileCount: raw.files ? Object.keys(raw.files).filter(function (k) { return !/:t$/.test(k); }).length : 0 };
+    } else throw new Error('format');
   }
 
   function doRestore() {
@@ -2069,7 +2299,7 @@
     }
     var d = r.data;
     next = { expenses: d.expenses, budgets: d.budgets || {}, categories: d.categories, tasks: d.tasks, shopping: d.shopping, groups: d.groups, attachments: d.attachments,
-      events: d.events, bills: d.bills, focus: d.focus, settings: d.settings || {}, prices: d.prices || {} };
+      events: d.events, bills: d.bills, focus: d.focus, settings: Object.assign({}, d.settings || {}, pinFields(S.settings)), prices: d.prices || {} };
     if (!r.files) { finishRestore(next, null, true); return; }
     var files = {};
     Promise.all(Object.keys(r.files).map(function (k) {
@@ -2119,14 +2349,27 @@
     if (!b || !S) return;
     var a = b.getAttribute('data-action'), id = b.getAttribute('data-id');
     var it, t;
+    if (ui.locked && !/^pin-/.test(a)) return;
     switch (a) {
+      // Màn hình khoá, mã PIN
+      case 'pin-key': pinPress(b.getAttribute('data-k')); break;
+      case 'pin-del': pinPress('del'); break;
+      case 'pin-forgot': ui.pinForgot = 1; render(); break;
+      case 'pin-forgot-back': ui.pinForgot = 0; render(); break;
+      case 'pin-wipe-ask': ui.pinForgot = 2; render(); break;
+      case 'pin-wipe': wipeAll(); break;
+      case 'pin-mode': ui.pinMode = b.getAttribute('data-m'); ui.pinMsg = ''; render(ui.pinMode === 'set' ? 'pin-new' : 'pin-cur'); break;
+      case 'pin-cancel': ui.pinMode = ''; ui.pinMsg = ''; render(); break;
+
       case 'month': ui.month = shiftMonth(ui.month, +b.getAttribute('data-delta')); render(); break;
       case 'cal-month':
         ui.calMonth = shiftMonth(ui.calMonth, +b.getAttribute('data-delta'));
         ui.calDay = monthOf(todayISO()) === ui.calMonth ? todayISO() : ui.calMonth + '-01';
         render(); break;
       case 'cal-day': ui.calDay = b.getAttribute('data-d'); render(); break;
-      case 'go': go(b.getAttribute('data-view')); break;
+      case 'go':
+        if (ui.view === 'settings') { ui.pinMode = ''; ui.pinMsg = ''; ui.bkPass = ''; ui.bkPass2 = ''; }
+        go(b.getAttribute('data-view')); break;
       case 'money-tab': goMoney(b.getAttribute('data-tab')); break;
       case 'show-owed': ui.filter = 'owed'; ui.query = ''; goMoney('list'); break;
       case 'year': ui.year = String(+ui.year + +b.getAttribute('data-delta')); ui.exportMsg = ''; render(); break;
@@ -2413,6 +2656,7 @@
     }
     var st = el.getAttribute('data-setting');
     if (st === 'summaryTime' && /^\d{2}:\d{2}$/.test(el.value)) { S.settings.summaryTime = el.value; persist([metaOp('settings')]); showToast('Thẻ Tổng kết ngày hiện từ ' + el.value); }
+    if (st === 'lockAfter') { S.settings.lockAfter = +el.value; persist([metaOp('settings')]); showToast('Đã lưu'); }
     if (st === 'digestTime' && /^\d{2}:\d{2}$/.test(el.value)) { S.settings.digestTime = el.value; persist([metaOp('settings')]); showToast('Bản tin buổi sáng lúc ' + el.value); }
     if (st === 'focusWork' || st === 'focusBreak') { S.settings[st] = +el.value; ui[st] = 0; persist([metaOp('settings')]); showToast('Đã lưu'); }
   });
@@ -2435,6 +2679,8 @@
       else if (tk !== 'repeat' && tk !== 'costCat') ui.tdraft[tk] = el.value;
       return;
     }
+    var bkk = el.getAttribute('data-bk');
+    if (bkk) { ui[bkk] = el.value; return; }
     var ei = el.getAttribute('data-einput');
     if (ei) { if (ei !== 'allDay') ui.edraft[ei] = el.value; return; }
     var bin = el.getAttribute('data-binput');
@@ -2489,10 +2735,17 @@
     else if (id === 'billform') saveBill();
     else if (id === 'shopadd') { var v = document.getElementById('shop-new').value; if (v.trim()) addShopping(v); }
     else if (id === 'catadd') addCategory();
+    else if (id === 'pinform') savePin();
+    else if (id === 'unlockform') unlockBackup();
     else if (id === 'groupadd') addGroup();
   });
 
   document.addEventListener('keydown', function (ev) {
+    if (ui.locked && !ui.pinForgot) {
+      if (/^[0-9]$/.test(ev.key)) { ev.preventDefault(); pinPress(ev.key); }
+      else if (ev.key === 'Backspace') { ev.preventDefault(); pinPress('del'); }
+      return;
+    }
     if (ev.key !== 'Escape') return;
     if (ui.viewer) { URL.revokeObjectURL(ui.viewer.url); ui.viewer = null; renderOverlay(); }
     else if (ui.sheet) closeSheet();
@@ -2500,13 +2753,27 @@
 
   // Mở lại app sau nửa đêm hoặc sau 22:00: vẽ lại để thẻ Hôm nay / Tổng kết đúng giờ
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden || !S) return;
+    if (!S) return;
+    var st = S.settings;
+    if (document.hidden) {
+      ui.hiddenAt = Date.now();
+      if (st.pinHash && !ui.locked && !+st.lockAfter) lockNow(); // khoá ngay để ảnh xem trước của app không lộ nội dung
+      return;
+    }
+    if (st.pinHash && !ui.locked && ui.hiddenAt && Date.now() - ui.hiddenAt >= (st.lockAfter == null ? 1 : +st.lockAfter) * 60000) { lockNow(); return; }
+    if (ui.locked) { render(); return; }
     focusTick(); checkAlerts();
     if (ui.view === 'today' || ui.view === 'calendar' || ui.view === 'focus') render();
   });
   var ticks = 0;
   setInterval(function () {
     if (!S) return;
+    if (ui.locked) {
+      var w = (S.settings.pinWait || 0) - Date.now();
+      if (w > -1500 && !ui.pinForgot) render(); // đếm ngược thời gian chờ sau khi nhập sai nhiều lần
+      focusTick();
+      return;
+    }
     focusTick();
     if (++ticks % 20 === 0) checkAlerts();
   }, 1000);
@@ -2521,6 +2788,7 @@
     ui.calMonth = monthOf(todayISO());
     ui.calDay = todayISO();
     var q = /[?&]add=(\w+)/.exec(location.search);
+    if (S.settings.pinHash) { ui.locked = true; ui.pendingAdd = q ? q[1] : ''; render(); return; }
     render();
     if (q && q[1] === 'expense') openExpense(null);
     else if (q && q[1] === 'task') openTask(null);

@@ -1,6 +1,6 @@
 /* Service worker: lưu sẵn các file của app để mở được cả khi không có mạng.
    Mỗi lần sửa app, tăng VERSION để điện thoại tải bản mới. */
-var VERSION = 'mylife-hub-v1';
+var VERSION = 'mylife-hub-v2';
 var SHELL = [
   './', 'index.html', 'styles.css', 'store.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',

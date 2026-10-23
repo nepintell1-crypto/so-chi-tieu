@@ -64,6 +64,22 @@
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   function byId(list, id) { for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]; return null; }
   function nowHHMM() { var d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  // Ô ngày/giờ: hiện dd/mm/yyyy và 24 giờ bất kể ngôn ngữ trình duyệt; ô gốc trong suốt nằm đè lên để mở bộ chọn của máy
+  function pickText(kind, v) {
+    if (!v) return kind === 'date' ? 'dd/mm/yyyy' : '--:--';
+    return kind === 'date' ? v.slice(8, 10) + '/' + v.slice(5, 7) + '/' + v.slice(0, 4) : v.slice(0, 5);
+  }
+  function pickField(kind, id, v, attrs, bad) {
+    v = v || '';
+    return '<span class="pick' + (bad ? ' bad' : '') + '"><span class="pick-t' + (v ? '' : ' ph') + '" aria-hidden="true">' + pickText(kind, v) + '</span>' +
+      (kind === 'date' ? I.cal : I.clock) +
+      '<input id="' + id + '" type="' + kind + '" class="pick-in" value="' + esc(v) + '" ' + attrs + (bad ? ' aria-invalid="true"' : '') + '></span>';
+  }
+  function syncPick(el) {
+    var t = el.parentNode.querySelector('.pick-t');
+    t.textContent = pickText(el.type, el.value);
+    t.classList.toggle('ph', !el.value);
+  }
   function fmtSize(b) { return b >= 1048576 ? String(Math.round(b / 104857.6) / 10).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
   function shortMoney(v) {
     if (v === 0) return '0';
@@ -203,6 +219,7 @@
     close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
     today: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
     cal: svg('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>'),
+    clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
     tasks: svg('<path d="M9 6h12M9 12h12M9 18h12"/><path d="M3 6l1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"/>'),
     wallet: svg('<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M16 15h2"/><path d="M6 6l9-3 1 3"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>', 26, 2.5),
@@ -514,8 +531,8 @@
         '<div class="field"><span>Thẻ</span><div class="seg seg3" role="group" aria-label="Thẻ">' + tagBtns + '</div></div>' +
         '<div class="field"><span>Mức ưu tiên</span><div class="seg seg3 prio" role="group" aria-label="Mức ưu tiên">' + prioBtns + '</div></div>' +
         '<div class="field"><span>Hạn</span><div class="chips">' + dueChips + '</div>' +
-          '<div class="row2"><input id="t-due" type="date" aria-label="Ngày hạn" value="' + esc(d.due) + '" data-tinput="due"' + (e.due ? ' aria-invalid="true"' : '') + '>' +
-          '<input id="t-time" type="time" aria-label="Giờ (không bắt buộc)" value="' + esc(d.time) + '" data-tinput="time"></div>' +
+          '<div class="row2">' + pickField('date', 't-due', d.due, 'aria-label="Ngày hạn" data-tinput="due"', e.due) +
+          pickField('time', 't-time', d.time, 'aria-label="Giờ (không bắt buộc)" data-tinput="time"') + '</div>' +
           (e.due ? '<span class="err">' + e.due + '</span>' : '') + '</div>' +
         '<label class="field" for="t-repeat">Lặp lại' +
           '<select id="t-repeat" data-tinput="repeat">' + repOpts + '</select>' +
@@ -602,7 +619,7 @@
         '<div class="field"><span>Ngày</span><div class="chips">' +
           '<button type="button" class="chip" data-action="f-date" data-v="' + today + '" aria-pressed="' + (d.date === today) + '">Hôm nay</button>' +
           '<button type="button" class="chip" data-action="f-date" data-v="' + yest + '" aria-pressed="' + (d.date === yest) + '">Hôm qua</button>' +
-          '<input id="f-date" type="date" aria-label="Chọn ngày khác" value="' + esc(d.date) + '" data-input="date"' + (e.date ? ' aria-invalid="true"' : '') + '></div>' +
+          pickField('date', 'f-date', d.date, 'aria-label="Chọn ngày khác" data-input="date"', e.date) + '</div>' +
           (e.date ? '<span class="err">' + e.date + '</span>' : '') + '</div>' +
         (reimb ? '<label class="check-line"><input type="checkbox" data-input="reimbursed"' + (d.reimbursed ? ' checked' : '') + '> Công ty đã hoàn tiền khoản này</label>' : '') +
         '<label class="field" for="f-note">Ghi chú thêm (không bắt buộc)' +
@@ -890,7 +907,7 @@
           '<button class="btn" type="submit">Thêm</button></form>' +
       '</section>' +
       '<section class="card"><h2>Tổng kết ngày</h2>' +
-        '<label class="srow"><span class="grow">Hiện thẻ Tổng kết ngày từ</span><input type="time" class="sin time" value="' + esc(S.settings.summaryTime || '22:00') + '" data-setting="summaryTime"></label>' +
+        '<label class="srow"><span class="grow">Hiện thẻ Tổng kết ngày từ</span>' + pickField('time', 's-sumtime', S.settings.summaryTime || '22:00', 'data-setting="summaryTime"') + '</label>' +
       '</section>' +
       '<section class="card"><h2>Dữ liệu của anh</h2>' +
         '<p class="lead">Nơi lưu: ' + mode + (ui.storageInfo ? ' ' + esc(ui.storageInfo) : '') + '</p>' +
@@ -1583,6 +1600,7 @@
 
   // ---------- Sự kiện ----------
   document.addEventListener('click', function (ev) {
+    if (ev.target.classList && ev.target.classList.contains('pick-in') && ev.target.showPicker) { try { ev.target.showPicker(); } catch (er) {} return; }
     var b = ev.target.closest('[data-action]');
     if (!b || !S) return;
     var a = b.getAttribute('data-action'), id = b.getAttribute('data-id');
@@ -1780,6 +1798,7 @@
   document.addEventListener('change', function (ev) {
     var el = ev.target;
     if (!el.getAttribute || !S) return;
+    if (el.classList.contains('pick-in')) syncPick(el);
     if (el.getAttribute('data-restore')) { readRestoreFile(el.files[0]); el.value = ''; return; }
     if (el.getAttribute('data-attach')) { handleAttach(el); return; }
     var k = el.getAttribute('data-budget');
@@ -1818,6 +1837,7 @@
   document.addEventListener('input', function (ev) {
     var el = ev.target;
     if (!el.getAttribute || !S) return;
+    if (el.classList.contains('pick-in')) syncPick(el);
     var bk = el.getAttribute('data-budget');
     if (bk) { setBudget(bk, moneyInput(el)); return; }
     var tk = el.getAttribute('data-tinput');

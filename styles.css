@@ -23,6 +23,7 @@
   --cat-G: #5FD3A0;
   --cat-K: #B9A3F0;
   --cat-T: #F49AC1;
+  --cat-B: #56C7E8;
   --cat-plus: #D4AF37;
   --warn-bar: #F59E0B;
   --bar-out: #9AA3B2;
@@ -179,7 +180,7 @@ button { cursor: pointer; }
 .field input.amount { min-height: 64px; font-size: 28px; font-weight: 700; text-align: right; color: var(--accent); }
 .field input[aria-invalid="true"] { border-color: var(--out); }
 .err { color: var(--out); font-size: 13px; min-height: 0; }
-.cats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.cats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .cat {
   min-height: 66px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 12px; padding: 4px;

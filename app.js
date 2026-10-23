@@ -2,7 +2,7 @@
    Bước 2: nhập / sửa / xoá khoản thu chi, xem theo tháng, tự tính tổng.
    Bước 3: ngân sách tháng + cảnh báo, báo cáo năm có biểu đồ, xuất file Excel.
    Bước 4: sao lưu / khôi phục dữ liệu, chạy offline khi cài lên điện thoại.
-   Danh mục theo file Excel cũ: + thu nhập, A ăn chơi, C thiết yếu cá nhân, G gia đình, K chi khác; thêm T công ty. */
+   Danh mục theo file Excel cũ: + thu nhập, A ăn chơi, C thiết yếu cá nhân, G gia đình, K chi khác; thêm T công ty, B cho con. */
 (function () {
   'use strict';
 
@@ -12,9 +12,10 @@
     C: { name: 'Thiết yếu cá nhân', short: 'Cá nhân', color: 'var(--cat-C)' },
     G: { name: 'Gia đình', short: 'Gia đình', color: 'var(--cat-G)' },
     K: { name: 'Chi khác', short: 'Khác', color: 'var(--cat-K)' },
-    T: { name: 'Công ty', short: 'Công ty', color: 'var(--cat-T)' }
+    T: { name: 'Công ty', short: 'Công ty', color: 'var(--cat-T)' },
+    B: { name: 'Cho con', short: 'Cho con', color: 'var(--cat-B)' }
   };
-  var SPEND_CATS = ['A', 'C', 'G', 'K', 'T'];
+  var SPEND_CATS = ['A', 'C', 'G', 'K', 'T', 'B'];
   var WEEKDAYS = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
   var MAX_AMOUNT = 999999999999;
   var WARN_AT = 0.8; // cảnh báo khi chi đạt 80% hạn mức
@@ -240,7 +241,7 @@
 
   function viewList() {
     var list = itemsOfMonth(ui.month), s = totals(list);
-    var chips = [['all', 'Tất cả'], ['thu', 'Thu'], ['A', 'A · Ăn chơi'], ['C', 'C · Cá nhân'], ['G', 'G · Gia đình'], ['K', 'K · Khác'], ['T', 'T · Công ty']]
+    var chips = [['all', 'Tất cả'], ['thu', 'Thu'], ['A', 'A · Ăn chơi'], ['C', 'C · Cá nhân'], ['G', 'G · Gia đình'], ['K', 'K · Khác'], ['T', 'T · Công ty'], ['B', 'B · Cho con']]
       .map(function (c) {
         return '<button class="chip" data-action="filter" data-f="' + c[0] + '" aria-pressed="' + (ui.filter === c[0]) + '">' + c[1] + '</button>';
       }).join('');
@@ -571,7 +572,7 @@
     var e = {}, amt = +d.amount;
     if (!d.amount || !amt) e.amount = 'Nhập số tiền lớn hơn 0.';
     else if (amt > MAX_AMOUNT) e.amount = 'Số tiền quá lớn, kiểm tra lại số chữ số.';
-    if (d.type === 'chi' && SPEND_CATS.indexOf(d.cat) < 0) e.cat = 'Chọn một danh mục A, C, G, K hoặc T.';
+    if (d.type === 'chi' && SPEND_CATS.indexOf(d.cat) < 0) e.cat = 'Chọn một danh mục A, C, G, K, T hoặc B.';
     if (!validDate(d.date)) e.date = 'Chọn ngày hợp lệ (ngày/tháng/năm).';
     if (!d.content.trim()) e.content = 'Ghi nội dung để sau này dễ tra lại.';
     return e;

@@ -3,7 +3,7 @@
 App quản lý thu chi cá nhân, chạy trên điện thoại (Android, iPhone) và máy tính. Cài như một app từ trình duyệt, dùng được cả khi không có mạng.
 
 ## Chức năng
-- Nhập, sửa, xoá khoản thu chi theo danh mục: `+` Thu nhập, `A` Ăn chơi, `C` Thiết yếu cá nhân, `G` Gia đình, `K` Chi khác, `T` Công ty.
+- Nhập, sửa, xoá khoản thu chi theo danh mục: `+` Thu nhập, `A` Ăn chơi, `C` Thiết yếu cá nhân, `G` Gia đình, `K` Chi khác, `T` Công ty, `B` Cho con.
 - Xem theo tháng: Tổng thu, Tổng chi, Còn lại, tỷ lệ từng danh mục.
 - Sổ thu chi: nhóm theo ngày, tìm kiếm không cần gõ dấu, lọc theo danh mục.
 - Ngân sách tháng cho từng danh mục, cảnh báo khi đạt 80% và khi vượt.

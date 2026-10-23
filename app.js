@@ -1,4 +1,6 @@
 /* MyLife Hub (nâng cấp từ Sổ chi tiêu cá nhân)
+   Giai đoạn 2: lịch hẹn (lặp lại, nhắc trước), hoá đơn định kỳ (bấm Đã trả là ghi chi, tự sang kỳ sau),
+   Tập trung 60/5 phút, nhắc việc theo quy tắc + thông báo trên máy khi app đang mở.
    Giai đoạn 1: tab Hôm nay, Lịch tháng, Việc (thẻ, ưu tiên, hạn, lặp lại, đính kèm ảnh/tài liệu),
    Mua sắm (tự xếp nhóm, chuyển thành khoản chi: ghi riêng / gộp lần đi chợ / không ghi),
    nút (+) ghi nhanh, danh mục và nhóm hàng tự thêm, hoàn tiền khoản Công ty (T).
@@ -18,6 +20,12 @@
   var PRIO = { 1: 'Cao', 2: 'Vừa', 3: 'Thấp' };
   var REPEATS = [['', 'Không lặp'], ['day', 'Hằng ngày'], ['week', 'Hằng tuần'], ['month', 'Hằng tháng'], ['monthEnd', 'Ngày cuối tháng']];
   var EXTRA_COLORS = ['#E8C27A', '#8FD694', '#F2A65A', '#A0B4F0', '#E58FB0', '#7FD1C7', '#C9A0E8', '#F07C7C'];
+  var EVENT_REPEATS = [['', 'Không lặp'], ['week', 'Hằng tuần'], ['month', 'Hằng tháng'], ['year', 'Hằng năm']];
+  var EVENT_REMIND = [['', 'Không nhắc'], ['0', 'Đúng giờ'], ['15', 'Trước 15 phút'], ['30', 'Trước 30 phút'], ['60', 'Trước 1 giờ'], ['1440', 'Trước 1 ngày']];
+  var BILL_CYCLES = [['1', 'Hằng tháng'], ['2', '2 tháng một lần'], ['3', '3 tháng (quý)'], ['6', '6 tháng'], ['12', 'Hằng năm']];
+  var BILL_REMIND = [['0', 'Đúng ngày'], ['1', 'Trước 1 ngày'], ['3', 'Trước 3 ngày'], ['5', 'Trước 5 ngày'], ['7', 'Trước 7 ngày']];
+  var BILL_PRESETS = [['Tiền điện', 'G'], ['Tiền nước', 'G'], ['Internet', 'G'], ['Điện thoại', 'C'], ['Học phí', 'B'], ['Bảo hiểm', 'K']];
+  var FOCUS_WORK = [25, 45, 60, 90], FOCUS_BREAK = [5, 10, 15];
   var DOC_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
   // ---------- Danh mục (đọc từ dữ liệu, anh thêm được mục mới) ----------
@@ -183,6 +191,66 @@
     return 'Hằng ngày';
   }
 
+  function addMonths(iso, n, day) {
+    var d = parseISO(iso), y = d.getFullYear(), m = d.getMonth() + n;
+    return isoOf(new Date(y, m, Math.min(day || d.getDate(), lastDay(y, m))));
+  }
+  function atTime(iso, hhmm) { var d = parseISO(iso); d.setHours(+hhmm.slice(0, 2), +hhmm.slice(3, 5), 0, 0); return d.getTime(); }
+  function options(list, cur) {
+    return list.map(function (o) { return '<option value="' + o[0] + '"' + (String(cur) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
+  }
+
+  // ---------- Lịch hẹn ----------
+  // Lịch lặp lại không tạo bản sao: tính xem ngày iso có trùng lịch không
+  function eventOn(ev, iso) {
+    if (iso < ev.date) return false;
+    if (iso === ev.date || !ev.repeat) return iso === ev.date;
+    var a = parseISO(ev.date), b = parseISO(iso);
+    if (ev.repeat === 'week') return Math.round((b - a) / 864e5) % 7 === 0;
+    var day = Math.min(a.getDate(), lastDay(b.getFullYear(), b.getMonth()));
+    if (ev.repeat === 'month') return b.getDate() === day;
+    if (ev.repeat === 'year') return b.getMonth() === a.getMonth() && b.getDate() === day;
+    return false;
+  }
+  function eventSort(a, b) {
+    var x = a.allDay ? '' : a.start || '', y = b.allDay ? '' : b.start || '';
+    return x === y ? 0 : x < y ? -1 : 1;
+  }
+  function eventsOn(iso) { return S.events.filter(function (ev) { return eventOn(ev, iso); }).sort(eventSort); }
+  function eventTime(ev) { return ev.allDay || !ev.start ? 'Cả ngày' : ev.start + (ev.end ? '–' + ev.end : ''); }
+  var EV_REPEAT_TEXT = { week: 'Hằng tuần', month: 'Hằng tháng', year: 'Hằng năm' };
+  // Lúc nhắc (ms) cho lần diễn ra ngày iso. Lịch cả ngày: 7:00 sáng hôm đó, hoặc 20:00 hôm trước nếu chọn "Trước 1 ngày"
+  function eventRemindAt(ev, iso) {
+    if (ev.remind === '' || ev.remind == null) return null;
+    var mins = +ev.remind;
+    if (ev.allDay || !ev.start) return mins >= 1440 ? atTime(addDays(iso, -1), '20:00') : atTime(iso, '07:00');
+    return atTime(iso, ev.start) - mins * 60000;
+  }
+
+  // ---------- Hoá đơn định kỳ ----------
+  function billDays(b) { return Math.round((parseISO(b.nextDue) - parseISO(todayISO())) / 864e5); }
+  function billDueText(b) {
+    var n = billDays(b);
+    if (n < 0) return 'Quá hạn ' + (-n) + ' ngày (' + shortDate(b.nextDue) + ')';
+    if (n === 0) return 'Đến hạn hôm nay';
+    if (n === 1) return 'Hạn ngày mai';
+    return 'Hạn ' + shortDate(b.nextDue) + ' (còn ' + n + ' ngày)';
+  }
+  function billSoon(b) { return b.active && billDays(b) <= (+b.remindDays || 0); }
+  function billAmount(b) { return b.lastAmount || b.amount || 0; }
+  function billDuesIn(b, ym) {
+    var out = [], d = b.nextDue, i = 0;
+    while (d && monthOf(d) <= ym && i++ < 400) { if (monthOf(d) === ym) out.push(d); d = addMonths(d, +b.cycle || 1, b.day); }
+    return out;
+  }
+
+  // ---------- Tập trung ----------
+  function focusOn(iso) { return S.focus.filter(function (f) { return f.date === iso; }); }
+  function sumMin(list) { return list.reduce(function (a, f) { return a + f.minutes; }, 0); }
+  function minText(m) { return m >= 60 ? Math.floor(m / 60) + ' giờ' + (m % 60 ? ' ' + (m % 60) + ' phút' : '') : m + ' phút'; }
+  function clock(ms) { var x = Math.max(0, Math.ceil(ms / 1000)); return pad(Math.floor(x / 60)) + ':' + pad(x % 60); }
+  function focusLeft(r) { return r.pausedLeft != null ? r.pausedLeft : r.endsAt - Date.now(); }
+
   // ---------- Mua sắm ----------
   function groupOf(id) { return byId(S.groups, id) || byId(S.groups, 'g-other') || S.groups[0]; }
   function groupFor(name) {
@@ -204,7 +272,8 @@
   var ui = {
     view: 'today', back: 'today', moneyTab: 'overview', month: null, filter: 'all', query: '',
     taskFilter: 'all', showDone: false, calMonth: null, calDay: null,
-    draft: null, tdraft: null, sdraft: null, errors: {}, confirmDelete: false,
+    draft: null, tdraft: null, sdraft: null, edraft: null, bdraft: null, errors: {}, confirmDelete: false,
+    focusTask: '', focusWork: 0, focusBreak: 0, focusBack: 'today',
     sheet: null, viewer: null, attBusy: 0, lastSaved: null,
     year: null, exporting: false, exportMsg: '', restore: null, dataMsg: '', storageInfo: '', setMsg: ''
   };
@@ -234,7 +303,10 @@
     image: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>', 20),
     file: svg('<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/>', 20),
     check: svg('<path d="M5 12l5 5 9-10"/>', 16, 3),
-    cart: svg('<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.5 12h11L21 7H6.2"/>', 18)
+    cart: svg('<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.5 12h11L21 7H6.2"/>', 18),
+    bell: svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>', 18),
+    focus: svg('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>', 18),
+    pin: svg('<path d="M12 21s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="9" r="2.5"/>', 12)
   };
 
   // ---------- Phần dùng chung ----------
@@ -276,6 +348,24 @@
       (opts.later && !done && t.due && t.due <= today ? '<button class="mini-btn" data-action="task-later" data-id="' + esc(t.id) + '">Để mai</button>' : '') +
       '</div>';
   }
+  function eventRow(ev) {
+    var sub = [];
+    if (ev.place) sub.push(I.pin + esc(ev.place));
+    if (ev.repeat) sub.push(EV_REPEAT_TEXT[ev.repeat]);
+    if (ev.remind !== '' && ev.remind != null) sub.push(I.bell.replace(/width="18" height="18"/, 'width="12" height="12"'));
+    return '<button class="ev-row" data-action="event-edit" data-id="' + esc(ev.id) + '">' +
+      '<span class="ev-time num">' + esc(eventTime(ev)) + '</span>' +
+      '<span class="mid"><span class="t">' + esc(ev.title) + '</span>' + (sub.length ? '<span class="sub">' + sub.join(' · ') + '</span>' : '') + '</span></button>';
+  }
+  function billRow(b) {
+    var late = b.active && billDays(b) < 0, amt = billAmount(b);
+    return '<div class="task-row bill-row' + (b.active ? '' : ' off') + '">' +
+      '<span class="tag sm" style="background:' + catOf(b.cat).color + '">' + esc(b.cat) + '</span>' +
+      '<button class="task-main" data-action="bill-edit" data-id="' + esc(b.id) + '"><span class="t">' + esc(b.name) + '</span>' +
+        '<span class="sub"><span class="' + (late ? 'late' : '') + '">' + esc(b.active ? billDueText(b) : 'Đang tạm dừng') + '</span>' + (amt ? ' · ~' + money(amt) + ' đ' : '') + '</span></button>' +
+      (b.active ? '<button class="mini-btn' + (billSoon(b) ? ' gold' : '') + '" data-action="bill-pay" data-id="' + esc(b.id) + '">Đã trả</button>' : '') +
+      '</div>';
+  }
   function emptyBox(text, btn) {
     return '<div class="empty"><p>' + text + '</p>' + (btn || '') + '</div>';
   }
@@ -302,7 +392,7 @@
       '<div class="att-btns">' +
         picker('camera', 'Chụp ảnh', I.camera, 'image/*', ' capture="environment"') +
         picker('image', 'Chọn ảnh', I.image, 'image/*', ' multiple') +
-        (type === 'task' ? picker('doc', 'Tài liệu', I.file, DOC_ACCEPT, ' multiple') : '') +
+        (type !== 'expense' ? picker('doc', 'Tài liệu', I.file, DOC_ACCEPT, ' multiple') : '') +
       '</div></div>';
   }
 
@@ -320,15 +410,25 @@
     var pend = pendingShop();
     var doneToday = S.tasks.filter(function (t) { return !isOpen(t) && t.doneAt && isoOf(new Date(t.doneAt)) === today; }).length;
     var tomorrow = S.tasks.filter(function (t) { return isOpen(t) && t.due === addDays(today, 1); }).length;
+    var evToday = eventsOn(today), evTmr = eventsOn(addDays(today, 1));
+    var bills = S.bills.filter(billSoon).sort(function (a, b) { return a.nextDue < b.nextDue ? -1 : 1; });
+    var fr = S.settings.focusRun, fMin = sumMin(focusOn(today));
 
     var summary = nowHHMM() >= (S.settings.summaryTime || '22:00')
       ? '<section class="card summary" aria-label="Tổng kết ngày"><h2>Tổng kết ngày</h2>' +
         '<p>Đã chi <b class="num">' + money(spentToday) + ' đ</b> (' + outCount + ' khoản), xong <b>' + doneToday + '</b> việc.' +
         (due.length ? ' Còn <b>' + due.length + '</b> việc đến hạn chưa xong.' : '') +
-        ' Ngày mai có <b>' + tomorrow + '</b> việc đến hạn.</p></section>'
+        ' Ngày mai có <b>' + tomorrow + '</b> việc đến hạn' + (evTmr.length ? ', <b>' + evTmr.length + '</b> lịch hẹn' : '') + '.' +
+        (fMin ? ' Hôm nay tập trung ' + minText(fMin) + '.' : '') + '</p></section>'
       : '';
 
+    // Nhắc nhở theo quy tắc: hoá đơn sắp/quá hạn, chi phí của việc vừa xong, món đã mua, chưa ghi chi, sao lưu
     var reminders = [];
+    bills.forEach(function (b) {
+      var amt = billAmount(b);
+      reminders.push('<div class="rem"><span><b>' + esc(b.name) + '</b> · <span class="' + (billDays(b) < 0 ? 'late' : '') + '">' + esc(billDueText(b)) + '</span>' + (amt ? ' · ~<span class="num">' + money(amt) + ' đ</span>' : '') + '</span>' +
+        '<span class="rem-btns"><button class="mini-btn gold" data-action="bill-pay" data-id="' + esc(b.id) + '">Đã trả</button></span></div>');
+    });
     prompts.forEach(function (t) {
       reminders.push('<div class="rem"><span>Ghi <b class="num">' + money(t.cost) + ' đ</b> cho “' + esc(t.title) + '”?</span>' +
         '<span class="rem-btns"><button class="mini-btn gold" data-action="task-log" data-id="' + esc(t.id) + '">Ghi</button>' +
@@ -338,6 +438,10 @@
       var est = pend.reduce(function (a, it) { return a + estOf(it); }, 0);
       reminders.push('<div class="rem"><span>Đã mua <b>' + pend.length + '</b> món chưa ghi chi' + (est ? ' (ước tính ' + money(est) + ' đ)' : '') + '.</span>' +
         '<span class="rem-btns"><button class="mini-btn gold" data-action="shop-log">Ghi chi</button></span></div>');
+    }
+    if (!outCount && nowHHMM() >= '20:00' && S.expenses.some(function (t) { return t.type === 'chi' && t.date < today && t.date >= addDays(today, -7); })) {
+      reminders.push('<div class="rem"><span>Hôm nay chưa ghi khoản chi nào. Có chi gì thì ghi luôn cho khỏi quên.</span>' +
+        '<span class="rem-btns"><button class="mini-btn gold" data-action="add">Ghi nhanh</button></span></div>');
     }
     var lb = S.settings.lastBackup;
     if (S.expenses.length > 20 && (!lb || lb < addDays(today, -30))) {
@@ -361,10 +465,20 @@
         return '<div>' + I.warn + '<span>' + esc(w) + '</span></div>'; }).join('') +
         '<button class="link-btn" data-action="money-tab" data-tab="budget">Xem ngân sách</button></section>' : '') +
       (reminders.length ? '<section class="card"><h2>Nhắc nhở</h2>' + reminders.join('') + '</section>' : '') +
+      (evToday.length || evTmr.length ? '<section class="card"><h2>Lịch hẹn<button class="link-btn" data-action="go" data-view="calendar">Mở lịch</button></h2>' +
+        (evToday.length ? evToday.map(eventRow).join('') : '<p class="lead">Hôm nay không có lịch hẹn.</p>') +
+        (evTmr.length ? '<p class="lead">Ngày mai: ' + esc(evTmr.map(function (ev) { return (ev.allDay || !ev.start ? '' : ev.start + ' ') + ev.title; }).join('; ')) + '</p>' : '') +
+      '</section>' : '') +
       '<section class="card"><h2>Việc đến hạn<button class="link-btn" data-action="go" data-view="tasks">Tất cả việc</button></h2>' +
         (due.length ? due.slice(0, 8).map(function (t) { return taskRow(t, { later: true }); }).join('') +
           (due.length > 8 ? '<p class="lead">Còn ' + (due.length - 8) + ' việc nữa trong tab Việc.</p>' : '')
           : emptyBox('Hôm nay không có việc nào đến hạn.', '<button class="btn ghost" data-action="task-new">Thêm việc</button>')) +
+      '</section>' +
+      '<section class="card"><h2>Tập trung' + (fMin ? '<span class="num muted">Hôm nay ' + minText(fMin) + '</span>' : '') + '</h2>' +
+        (fr ? '<div class="rem"><span>' + (fr.phase === 'work' ? 'Đang làm' : 'Đang nghỉ') + (fr.pausedLeft != null ? ' (tạm dừng)' : '') + ' · còn <b class="num" data-focus-left>' + clock(focusLeft(fr)) + '</b></span>' +
+            '<span class="rem-btns"><button class="mini-btn gold" data-action="go" data-view="focus">Mở</button></span></div>'
+          : '<div class="rem"><span>Làm liền một việc ' + (S.settings.focusWork || 60) + ' phút, nghỉ ' + (S.settings.focusBreak || 5) + ' phút.</span>' +
+            '<span class="rem-btns"><button class="mini-btn gold" data-action="go" data-view="focus">Bắt đầu</button></span></div>') +
       '</section>' +
       '<section class="card"><h2>Thu chi hôm nay' + (todays.length ? '<span class="num muted">' + todays.length + ' khoản</span>' : '') + '</h2>' +
         (todays.length ? todays.map(function (t) { return txRow(t, false); }).join('') : emptyBox('Chưa ghi khoản nào hôm nay. Bấm nút + để ghi nhanh.')) +
@@ -376,38 +490,50 @@
     var ym = ui.calMonth, today = todayISO();
     var first = parseISO(ym + '-01'), offset = (first.getDay() + 6) % 7;
     var days = lastDay(first.getFullYear(), first.getMonth());
-    var spend = {}, tasksBy = {};
+    var spend = {}, tasksBy = {}, billsBy = {};
     S.expenses.forEach(function (t) { if (t.type === 'chi' && monthOf(t.date) === ym) spend[t.date] = (spend[t.date] || 0) + t.amount; });
     S.tasks.forEach(function (t) { if (t.due && monthOf(t.due) === ym) (tasksBy[t.due] = tasksBy[t.due] || []).push(t); });
+    S.bills.forEach(function (b) { if (b.active) billDuesIn(b, ym).forEach(function (d) { (billsBy[d] = billsBy[d] || []).push(b); }); });
     var cells = WD_SHORT.map(function (w) { return '<span class="wd">' + w + '</span>'; }).join('');
     for (var i = 0; i < offset; i++) cells += '<span></span>';
     for (var d = 1; d <= days; d++) {
-      var iso = ym + '-' + pad(d), tl = tasksBy[iso] || [];
+      var iso = ym + '-' + pad(d), tl = tasksBy[iso] || [], ev = eventsOn(iso), bl = billsBy[iso] || [];
       var open = tl.filter(isOpen).length;
       var cls = 'cd' + (iso === today ? ' today' : '') + (iso === ui.calDay ? ' sel' : '');
-      var label = dayLabel(iso) + (spend[iso] ? ', chi ' + money(spend[iso]) + ' đồng' : '') + (tl.length ? ', ' + tl.length + ' việc' : '');
+      var label = dayLabel(iso) + (spend[iso] ? ', chi ' + money(spend[iso]) + ' đồng' : '') + (tl.length ? ', ' + tl.length + ' việc' : '') +
+        (ev.length ? ', ' + ev.length + ' lịch hẹn' : '') + (bl.length ? ', ' + bl.length + ' hoá đơn đến hạn' : '');
       cells += '<button class="' + cls + '" data-action="cal-day" data-d="' + iso + '" aria-label="' + esc(label) + '"' + (iso === ui.calDay ? ' aria-current="date"' : '') + '>' +
         '<span class="dn">' + d + '</span>' +
         (spend[iso] ? '<span class="ds num">' + shortMoney(spend[iso]).replace(' ', '') + '</span>' : '<span class="ds"></span>') +
-        (tl.length ? '<i class="dot' + (open ? '' : ' ok') + '"></i>' : '') + '</button>';
+        '<span class="dots">' + (tl.length ? '<i class="dot' + (open ? '' : ' ok') + '"></i>' : '') + (ev.length ? '<i class="dot ev"></i>' : '') + (bl.length ? '<i class="dot bill"></i>' : '') + '</span></button>';
     }
     var sel = ui.calDay;
     var dayTasks = S.tasks.filter(function (t) { return t.due === sel; }).sort(taskSort);
     var dayTx = S.expenses.filter(function (t) { return t.date === sel; }).sort(sortDesc);
+    var dayEv = eventsOn(sel);
+    var dayBills = S.bills.filter(function (b) { return b.active && billDuesIn(b, monthOf(sel)).indexOf(sel) >= 0; });
     var daySpent = dayTx.reduce(function (a, t) { return a + (t.type === 'chi' ? t.amount : 0); }, 0);
     var monthSpent = Object.keys(spend).reduce(function (a, k) { return a + spend[k]; }, 0);
+    var billHTML = dayBills.map(function (b) {
+      // Kỳ đang chờ trả thì có nút Đã trả; kỳ sau nữa chỉ ghi để biết trước
+      if (b.nextDue === sel) return billRow(b);
+      var amt = billAmount(b);
+      return '<div class="rem"><span>Hoá đơn <b>' + esc(b.name) + '</b>' + (amt ? ' · ~<span class="num">' + money(amt) + ' đ</span>' : '') + '</span></div>';
+    }).join('');
 
     return monthHeader(monthLabel(ym), 'cal-month') +
-      '<p class="lead">Chi cả tháng: <b class="num" style="color:var(--fg)">' + money(monthSpent) + ' đ</b>. Ô ngày ghi số tiền đã chi; chấm vàng là có việc chưa xong, chấm xanh là việc đã xong.</p>' +
+      '<p class="lead">Chi cả tháng: <b class="num" style="color:var(--fg)">' + money(monthSpent) + ' đ</b>. Ô ngày ghi số tiền đã chi.</p>' +
+      '<p class="legend"><span><i class="dot"></i>Việc</span><span><i class="dot ok"></i>Việc đã xong</span><span><i class="dot ev"></i>Lịch hẹn</span><span><i class="dot bill"></i>Hoá đơn</span></p>' +
       '<section class="card cal" aria-label="Lịch ' + esc(monthLabel(ym)) + '"><div class="cal-grid">' + cells + '</div></section>' +
       '<section class="card"><h2>' + esc(dayLabel(sel)) + (daySpent ? '<span class="num muted">Chi ' + money(daySpent) + ' đ</span>' : '') + '</h2>' +
-        (dayTasks.length ? dayTasks.map(function (t) { return taskRow(t, {}); }).join('') : '') +
-        (dayTx.length ? dayTx.map(function (t) { return txRow(t, false); }).join('') : '') +
-        (!dayTasks.length && !dayTx.length ? '<p class="lead">Ngày này chưa có việc hay khoản thu chi nào.</p>' : '') +
-        '<div class="row2"><button class="btn ghost" data-action="task-new" data-due="' + sel + '">Thêm việc</button>' +
-        '<button class="btn ghost" data-action="add" data-date="' + sel + '">Ghi khoản</button></div>' +
-      '</section>' +
-      '<p class="lead center">Lịch hẹn và hoá đơn định kỳ sẽ có ở giai đoạn 2.</p>';
+        dayEv.map(eventRow).join('') + billHTML +
+        dayTasks.map(function (t) { return taskRow(t, {}); }).join('') +
+        dayTx.map(function (t) { return txRow(t, false); }).join('') +
+        (!dayEv.length && !dayBills.length && !dayTasks.length && !dayTx.length ? '<p class="lead">Ngày này chưa có lịch hẹn, việc hay khoản thu chi nào.</p>' : '') +
+        '<div class="row3"><button class="btn ghost" data-action="event-new" data-date="' + sel + '">Lịch hẹn</button>' +
+        '<button class="btn ghost" data-action="task-new" data-due="' + sel + '">Việc</button>' +
+        '<button class="btn ghost" data-action="add" data-date="' + sel + '">Thu chi</button></div>' +
+      '</section>';
   }
 
   // ---------- Tab Việc ----------
@@ -496,10 +622,9 @@
 
   // ---------- Form Việc ----------
   function kindSeg(cur) {
-    return '<div class="seg seg3" role="group" aria-label="Loại cần thêm">' +
-      '<button type="button" data-action="add-kind" data-k="expense" aria-pressed="' + (cur === 'expense') + '">Khoản thu chi</button>' +
-      '<button type="button" data-action="add-kind" data-k="task" aria-pressed="' + (cur === 'task') + '">Việc</button>' +
-      '<button type="button" data-action="add-kind" data-k="shop" aria-pressed="' + (cur === 'shop') + '">Món cần mua</button></div>';
+    return '<div class="seg seg4" role="group" aria-label="Loại cần thêm">' + [['expense', 'Thu chi'], ['task', 'Việc'], ['event', 'Lịch hẹn'], ['shop', 'Mua sắm']].map(function (k) {
+      return '<button type="button" data-action="add-kind" data-k="' + k[0] + '" aria-pressed="' + (cur === k[0]) + '">' + k[1] + '</button>';
+    }).join('') + '</div>';
   }
 
   function viewTaskForm() {
@@ -548,6 +673,7 @@
         '<div class="form-actions">' +
           '<button type="submit" class="btn">' + (isEdit ? 'Lưu thay đổi' : 'Lưu việc') + '</button>' +
           (isEdit && orig ? '<button type="button" class="btn ghost" data-action="task-toggle" data-id="' + esc(d.id) + '" data-from="form">' + (isOpen(orig) ? 'Đánh dấu đã xong' : 'Chuyển về chưa xong') + '</button>' : '') +
+          (isEdit && orig && isOpen(orig) ? '<button type="button" class="btn ghost with-icon" data-action="focus-task" data-id="' + esc(d.id) + '">' + I.focus + 'Tập trung vào việc này</button>' : '') +
           (isEdit && !ui.confirmDelete ? '<button type="button" class="btn danger" data-action="ask-delete">Xoá việc này</button>' : '') +
           confirm +
         '</div></form>';
@@ -595,6 +721,7 @@
     var src = '';
     if (d.source === 'shopping') src = 'Từ Mua sắm: ' + d.sourceIds.length + ' món';
     else if (d.source === 'task') { var tk = byId(S.tasks, d.sourceIds[0]); src = 'Từ việc: ' + (tk ? tk.title : '(đã xoá)'); }
+    else if (d.source === 'bill') { var bl = byId(S.bills, d.sourceIds[0]); src = 'Hoá đơn định kỳ: ' + (bl ? bl.name + (d.isNew ? ' · kỳ hạn ' + shortDate(bl.nextDue) + '. Lưu xong app chuyển sang kỳ sau.' : '') : '(đã xoá)'); }
     var reimb = CATS[d.cat] && CATS[d.cat].reimbursable;
     var confirm = ui.confirmDelete
       ? '<div class="confirm" role="alert"><span>Xoá khoản “' + esc(d.content || catOf(d.cat).name) + '”? Không thể hoàn tác.</span>' +
@@ -650,9 +777,148 @@
     }).join('');
   }
 
+  // ---------- Form lịch hẹn ----------
+  function viewEventForm() {
+    var d = ui.edraft, e = ui.errors, isEdit = !d.isNew, today = todayISO();
+    var dayChips = [['Hôm nay', today], ['Ngày mai', addDays(today, 1)]].map(function (c) {
+      return '<button type="button" class="chip" data-action="e-set" data-f="date" data-v="' + c[1] + '" aria-pressed="' + (d.date === c[1]) + '">' + c[0] + '</button>';
+    }).join('');
+    var confirm = ui.confirmDelete
+      ? '<div class="confirm" role="alert"><span>Xoá lịch hẹn “' + esc(d.title) + '”' + (d.repeat ? ' và tất cả các lần lặp lại' : '') + '? Không thể hoàn tác.</span>' +
+        '<div class="row"><button type="button" class="btn ghost" data-action="cancel-delete">Giữ lại</button>' +
+        '<button type="button" class="btn danger solid" data-action="event-delete">Xoá</button></div></div>' : '';
+    return topBar(isEdit ? 'Sửa lịch hẹn' : 'Thêm lịch hẹn', '<button class="icon-btn" data-action="close-form" aria-label="Đóng">' + I.close + '</button>') +
+      '<form class="form" id="eventform" novalidate>' +
+        (isEdit ? '' : kindSeg('event')) +
+        '<label class="field" for="e-title">Tên lịch hẹn' +
+          '<input id="e-title" maxlength="140" autocomplete="off" placeholder="Ví dụ: Họp giao ban, khám răng cho con" value="' + esc(d.title) + '" data-einput="title"' + (e.title ? ' aria-invalid="true"' : '') + '>' +
+          (e.title ? '<span class="err">' + e.title + '</span>' : '') + '</label>' +
+        '<div class="field"><span>Ngày</span><div class="chips">' + dayChips +
+          pickField('date', 'e-date', d.date, 'aria-label="Chọn ngày" data-einput="date"', e.date) + '</div>' +
+          (e.date ? '<span class="err">' + e.date + '</span>' : '') + '</div>' +
+        '<label class="check-line"><input type="checkbox" data-einput="allDay"' + (d.allDay ? ' checked' : '') + '> Cả ngày (không có giờ cụ thể)</label>' +
+        (d.allDay ? '' : '<div class="field"><span>Giờ bắt đầu – kết thúc</span><div class="row2">' +
+          pickField('time', 'e-start', d.start, 'aria-label="Giờ bắt đầu" data-einput="start"', e.start) +
+          pickField('time', 'e-end', d.end, 'aria-label="Giờ kết thúc (không bắt buộc)" data-einput="end"') + '</div>' +
+          (e.start ? '<span class="err">' + e.start + '</span>' : '<span class="hint">Giờ kết thúc không bắt buộc.</span>') + '</div>') +
+        '<label class="field" for="e-place">Địa điểm (không bắt buộc)' +
+          '<input id="e-place" maxlength="120" autocomplete="off" placeholder="Ví dụ: Phòng họp tầng 2" value="' + esc(d.place) + '" data-einput="place"></label>' +
+        '<div class="row2"><label class="field" for="e-repeat">Lặp lại<select id="e-repeat" data-einput="repeat">' + options(EVENT_REPEATS, d.repeat) + '</select></label>' +
+          '<label class="field" for="e-remind">Nhắc<select id="e-remind" data-einput="remind">' + options(EVENT_REMIND, d.remind) + '</select></label></div>' +
+        (d.repeat && validDate(d.date) ? '<span class="hint">' + esc(d.repeat === 'week' ? 'Mỗi ' + WEEKDAYS[parseISO(d.date).getDay()] : d.repeat === 'month' ? 'Ngày ' + (+d.date.slice(8, 10)) + ' hằng tháng' : 'Ngày ' + shortDate(d.date) + ' hằng năm') + ', bắt đầu từ ' + pickText('date', d.date) + '.</span>' : '') +
+        '<label class="field" for="e-notes">Ghi chú' +
+          '<textarea id="e-notes" rows="3" maxlength="2000" data-einput="notes">' + esc(d.notes) + '</textarea></label>' +
+        attachBlock('event', d.id, 'Giấy mời, tài liệu đính kèm') +
+        '<div class="form-actions">' +
+          '<button type="submit" class="btn">' + (isEdit ? 'Lưu thay đổi' : 'Lưu lịch hẹn') + '</button>' +
+          (isEdit && !ui.confirmDelete ? '<button type="button" class="btn danger" data-action="ask-delete">Xoá lịch hẹn này</button>' : '') +
+          confirm +
+        '</div></form>';
+  }
+
+  // ---------- Form hoá đơn định kỳ ----------
+  function viewBillForm() {
+    var d = ui.bdraft, e = ui.errors, isEdit = !d.isNew;
+    var catOpts = SPEND_CATS.concat(CATS[d.cat] && SPEND_CATS.indexOf(d.cat) < 0 ? [d.cat] : []).map(function (k) {
+      return '<option value="' + esc(k) + '"' + (d.cat === k ? ' selected' : '') + '>' + esc(k) + ' · ' + esc(catOf(k).name) + '</option>';
+    }).join('');
+    var presets = isEdit ? '' : '<div class="chips">' + BILL_PRESETS.map(function (b, i) {
+      return '<button type="button" class="chip" data-action="b-preset" data-i="' + i + '" aria-pressed="' + (d.name === b[0]) + '">' + b[0] + '</button>';
+    }).join('') + '</div>';
+    var paid = isEdit ? S.expenses.filter(function (t) { return t.source === 'bill' && t.sourceIds[0] === d.id; }).sort(sortDesc).slice(0, 6) : [];
+    var confirm = ui.confirmDelete
+      ? '<div class="confirm" role="alert"><span>Xoá hoá đơn “' + esc(d.name) + '”? Các khoản đã ghi chi trước đây vẫn giữ trong sổ.</span>' +
+        '<div class="row"><button type="button" class="btn ghost" data-action="cancel-delete">Giữ lại</button>' +
+        '<button type="button" class="btn danger solid" data-action="bill-delete">Xoá</button></div></div>' : '';
+    return topBar(isEdit ? 'Sửa hoá đơn' : 'Thêm hoá đơn', '<button class="icon-btn" data-action="close-form" aria-label="Đóng">' + I.close + '</button>') +
+      '<form class="form" id="billform" novalidate>' +
+        '<label class="field" for="b-name">Tên hoá đơn' + presets +
+          '<input id="b-name" maxlength="60" autocomplete="off" placeholder="Ví dụ: Tiền điện" value="' + esc(d.name) + '" data-binput="name"' + (e.name ? ' aria-invalid="true"' : '') + '>' +
+          (e.name ? '<span class="err">' + e.name + '</span>' : '') + '</label>' +
+        '<div class="row2"><label class="field" for="b-amount">Số tiền mỗi kỳ (ước tính)' +
+          '<input id="b-amount" class="num" inputmode="numeric" autocomplete="off" placeholder="0 đ" value="' + (d.amount ? money(+d.amount) : '') + '" data-binput="amount"' + (e.amount ? ' aria-invalid="true"' : '') + '></label>' +
+          '<label class="field" for="b-cat">Ghi chi vào<select id="b-cat" data-binput="cat">' + catOpts + '</select></label></div>' +
+        (e.amount ? '<span class="err">' + e.amount + '</span>' : '<span class="hint">Hoá đơn thay đổi mỗi kỳ (điện, nước): lúc trả sửa lại số thật, kỳ sau app gợi ý theo số lần trước.</span>') +
+        '<div class="field"><span>Hạn trả kỳ tới</span>' + pickField('date', 'b-due', d.nextDue, 'aria-label="Hạn trả kỳ tới" data-binput="nextDue"', e.nextDue) +
+          (e.nextDue ? '<span class="err">' + e.nextDue + '</span>' : '') + '</div>' +
+        '<div class="row2"><label class="field" for="b-cycle">Chu kỳ<select id="b-cycle" data-binput="cycle">' + options(BILL_CYCLES, d.cycle) + '</select></label>' +
+          '<label class="field" for="b-remind">Nhắc<select id="b-remind" data-binput="remindDays">' + options(BILL_REMIND, d.remindDays) + '</select></label></div>' +
+        '<label class="field" for="b-notes">Ghi chú (mã khách hàng, cách trả…)' +
+          '<input id="b-notes" maxlength="200" autocomplete="off" value="' + esc(d.notes) + '" data-binput="notes"></label>' +
+        (isEdit ? '<label class="check-line"><input type="checkbox" data-binput="paused"' + (d.paused ? ' checked' : '') + '> Tạm dừng (không nhắc nữa)</label>' : '') +
+        (paid.length ? '<div class="field"><span>Đã trả gần đây</span><div>' + paid.map(function (t) { return txRow(t, true); }).join('') + '</div></div>' : '') +
+        '<div class="form-actions">' +
+          '<button type="submit" class="btn">' + (isEdit ? 'Lưu thay đổi' : 'Lưu hoá đơn') + '</button>' +
+          (isEdit && !d.paused ? '<button type="button" class="btn ghost" data-action="bill-skip">Bỏ qua kỳ này (không ghi chi)</button>' : '') +
+          (isEdit && !ui.confirmDelete ? '<button type="button" class="btn danger" data-action="ask-delete">Xoá hoá đơn này</button>' : '') +
+          confirm +
+        '</div></form>';
+  }
+
+  // ---------- Tiền > Hoá đơn ----------
+  function viewBills() {
+    var act = S.bills.filter(function (b) { return b.active; }).sort(function (a, b) { return a.nextDue < b.nextDue ? -1 : a.nextDue > b.nextDue ? 1 : 0; });
+    var off = S.bills.filter(function (b) { return !b.active; });
+    var ym = monthOf(todayISO());
+    var perMonth = act.reduce(function (a, b) { return a + billAmount(b) / (+b.cycle || 1); }, 0);
+    var paid = S.expenses.filter(function (t) { return t.source === 'bill' && monthOf(t.date) === ym; }).sort(sortDesc);
+    var paidSum = paid.reduce(function (a, t) { return a + t.amount; }, 0);
+    return '<header class="top"><span style="width:44px"></span><h1>Hoá đơn định kỳ</h1>' +
+        '<button class="icon-btn" data-action="bill-new" aria-label="Thêm hoá đơn">' + I.small + '</button></header>' +
+      (act.length ? '<p class="lead">Trung bình khoảng <b class="num" style="color:var(--fg)">' + money(perMonth) + ' đ</b> mỗi tháng. Bấm <b>Đã trả</b> để ghi chi, app tự chuyển sang kỳ sau.</p>' : '') +
+      (act.length ? '<section class="card"><h2>Sắp đến hạn<span class="num muted">' + act.length + '</span></h2>' + act.map(billRow).join('') + '</section>'
+        : '<section class="card">' + emptyBox('Chưa có hoá đơn định kỳ nào. Thêm tiền điện, nước, internet, học phí… để app nhắc trước hạn.', '<button class="btn ghost" data-action="bill-new">Thêm hoá đơn</button>') + '</section>') +
+      (off.length ? '<section class="card"><h2>Tạm dừng<span class="num muted">' + off.length + '</span></h2>' + off.map(billRow).join('') + '</section>' : '') +
+      (paid.length ? '<section class="card"><h2>Đã trả tháng này<span class="num muted">' + money(paidSum) + ' đ</span></h2>' + paid.map(function (t) { return txRow(t, true); }).join('') + '</section>' : '');
+  }
+
+  // ---------- Tập trung ----------
+  function viewFocus() {
+    var r = S.settings.focusRun, today = todayISO();
+    var list = focusOn(today), mins = sumMin(list);
+    var week = 0;
+    for (var i = 0; i < 7; i++) week += sumMin(focusOn(addDays(today, -i)));
+    var body;
+    if (r) {
+      var total = (r.phase === 'work' ? r.work : r.brk) * 60000, left = focusLeft(r), t = r.taskId ? byId(S.tasks, r.taskId) : null;
+      var paused = r.pausedLeft != null;
+      body = '<section class="focus-box' + (r.phase === 'break' ? ' rest' : '') + '">' +
+        '<div class="lbl">' + (r.phase === 'work' ? 'Đang làm · ' + r.work + ' phút' : 'Nghỉ ngắn · ' + r.brk + ' phút') + (paused ? ' · tạm dừng' : '') + '</div>' +
+        '<div class="ring" id="focus-ring" style="--p:' + Math.round((1 - left / total) * 1000) / 10 + '" role="timer" aria-live="off"><span class="num" id="focus-clock">' + clock(left) + '</span></div>' +
+        (t ? '<p class="ft">' + esc(t.title) + '</p>' : '') +
+        '<div class="row2">' + (paused ? '<button class="btn" data-action="focus-resume">Tiếp tục</button>' : '<button class="btn ghost" data-action="focus-pause">Tạm dừng</button>') +
+          '<button class="btn ghost" data-action="focus-stop">Kết thúc</button></div>' +
+        (r.phase === 'break' ? '<button class="link-btn" data-action="focus-again">Bỏ nghỉ, làm phiên mới</button>' : '') +
+        (t && r.phase === 'work' ? '<button class="link-btn" data-action="focus-done">Xong việc này</button>' : '') +
+        '</section>';
+    } else {
+      var w = ui.focusWork || S.settings.focusWork || 60, br = ui.focusBreak || S.settings.focusBreak || 5;
+      var open = S.tasks.filter(isOpen).sort(taskSort).slice(0, 60);
+      if (ui.focusTask && !open.some(function (x) { return x.id === ui.focusTask; })) ui.focusTask = '';
+      body = '<section class="card">' +
+        '<label class="field" for="fo-task">Làm việc gì?<select id="fo-task" data-focus="task"><option value="">Không gắn với việc nào</option>' +
+          open.map(function (x) { return '<option value="' + esc(x.id) + '"' + (ui.focusTask === x.id ? ' selected' : '') + '>' + esc(cut(x.title, 50)) + ' · ' + esc(dueText(x)) + '</option>'; }).join('') + '</select></label>' +
+        '<div class="field"><span>Thời gian làm</span><div class="chips">' + FOCUS_WORK.map(function (m) {
+          return '<button type="button" class="chip" data-action="focus-w" data-v="' + m + '" aria-pressed="' + (w === m) + '">' + m + ' phút</button>'; }).join('') + '</div></div>' +
+        '<div class="field"><span>Nghỉ</span><div class="chips">' + FOCUS_BREAK.map(function (m) {
+          return '<button type="button" class="chip" data-action="focus-b" data-v="' + m + '" aria-pressed="' + (br === m) + '">' + m + ' phút</button>'; }).join('') + '</div></div>' +
+        '<button class="btn" data-action="focus-start">Bắt đầu ' + w + ' phút</button>' +
+        '<p class="hint">Hết giờ app kêu, rung và báo (nếu đã bật thông báo). Tắt màn hình vẫn tính giờ đúng; mở lại app là thấy.</p>' +
+        '</section>';
+    }
+    var rows = list.slice().sort(function (a, b) { return b.endedAt - a.endedAt; }).map(function (f) {
+      var t = f.taskId ? byId(S.tasks, f.taskId) : null, end = new Date(f.endedAt);
+      return '<div class="rem"><span>' + pad(end.getHours()) + ':' + pad(end.getMinutes()) + ' · ' + esc(t ? cut(t.title, 40) : 'Không gắn việc') + '</span><b class="num">' + f.minutes + ' phút</b></div>';
+    }).join('');
+    return topBar('Tập trung', '<button class="icon-btn" data-action="go" data-view="' + esc(ui.focusBack || 'today') + '" aria-label="Quay lại">' + I.prev + '</button>') + body +
+      '<section class="card"><h2>Hôm nay<span class="num muted">' + minText(mins) + '</span></h2>' +
+        (rows || '<p class="lead">Chưa có phiên nào hôm nay.</p>') +
+        '<p class="lead">7 ngày qua: ' + minText(week) + '.</p></section>';
+  }
+
   // ---------- Tab Tiền ----------
   function moneyNav() {
-    var tabs = [['overview', 'Tổng quan'], ['list', 'Sổ thu chi'], ['budget', 'Ngân sách'], ['report', 'Báo cáo']];
+    var tabs = [['overview', 'Tổng quan'], ['list', 'Sổ thu chi'], ['budget', 'Ngân sách'], ['bills', 'Hoá đơn'], ['report', 'Báo cáo']];
     return '<nav class="subnav" aria-label="Mục trong tab Tiền">' + tabs.map(function (t) {
       return '<button data-action="money-tab" data-tab="' + t[0] + '"' + (ui.moneyTab === t[0] ? ' aria-current="page"' : '') + '>' + t[1] + '</button>';
     }).join('') + '</nav>';
@@ -850,7 +1116,7 @@
   }
 
   function viewMoney() {
-    var body = ui.moneyTab === 'list' ? viewList() : ui.moneyTab === 'budget' ? viewBudget() : ui.moneyTab === 'report' ? viewReport() : viewOverview();
+    var body = ui.moneyTab === 'list' ? viewList() : ui.moneyTab === 'budget' ? viewBudget() : ui.moneyTab === 'bills' ? viewBills() : ui.moneyTab === 'report' ? viewReport() : viewOverview();
     return moneyNav() + body;
   }
 
@@ -906,8 +1172,15 @@
           '<select id="g-cat" class="ssel" aria-label="Danh mục chi của nhóm mới">' + catOpts('K') + '</select>' +
           '<button class="btn" type="submit">Thêm</button></form>' +
       '</section>' +
-      '<section class="card"><h2>Tổng kết ngày</h2>' +
+      '<section class="card"><h2>Nhắc nhở và thông báo</h2>' +
+        '<p class="lead">App nhắc lịch hẹn, việc có giờ, hoá đơn sắp đến hạn, bản tin buổi sáng và tổng kết buổi tối. App không có máy chủ nên chỉ báo được khi app đang mở hoặc vừa chạy nền; mở app là thấy đủ nhắc nhở ở tab Hôm nay.</p>' +
+        notifyRow() +
+        '<label class="srow"><span class="grow">Bản tin buổi sáng lúc</span>' + pickField('time', 's-digest', S.settings.digestTime || '07:30', 'data-setting="digestTime"') + '</label>' +
         '<label class="srow"><span class="grow">Hiện thẻ Tổng kết ngày từ</span>' + pickField('time', 's-sumtime', S.settings.summaryTime || '22:00', 'data-setting="summaryTime"') + '</label>' +
+      '</section>' +
+      '<section class="card"><h2>Tập trung</h2>' +
+        '<label class="srow"><span class="grow">Thời gian làm mặc định</span><select class="ssel" data-setting="focusWork">' + options(FOCUS_WORK.map(function (m) { return [String(m), m + ' phút']; }), S.settings.focusWork || 60) + '</select></label>' +
+        '<label class="srow"><span class="grow">Thời gian nghỉ</span><select class="ssel" data-setting="focusBreak">' + options(FOCUS_BREAK.map(function (m) { return [String(m), m + ' phút']; }), S.settings.focusBreak || 5) + '</select></label>' +
       '</section>' +
       '<section class="card"><h2>Dữ liệu của anh</h2>' +
         '<p class="lead">Nơi lưu: ' + mode + (ui.storageInfo ? ' ' + esc(ui.storageInfo) : '') + '</p>' +
@@ -920,7 +1193,16 @@
         confirm +
         (ui.dataMsg ? '<p class="lead" role="status">' + esc(ui.dataMsg) + '</p>' : '') +
       '</section>' +
-      '<p class="lead center">MyLife Hub · giai đoạn 1</p>';
+      '<p class="lead center">MyLife Hub · giai đoạn 2</p>';
+  }
+
+  function notifyRow() {
+    var N = window.Notification;
+    if (!N) return '<p class="note">Trình duyệt này không hỗ trợ thông báo. Trên iPhone, thêm app vào Màn hình chính (iOS 16.4 trở lên) rồi mở từ biểu tượng app.</p>';
+    if (N.permission === 'denied') return '<p class="note">Anh đã chặn thông báo của app. Muốn bật lại, vào cài đặt trình duyệt → Quyền của trang → Thông báo → Cho phép.</p>';
+    var on = S.settings.notify && N.permission === 'granted';
+    return '<div class="srow"><span class="grow">' + I.bell + ' Thông báo trên máy: <b>' + (on ? 'đang bật' : 'đang tắt') + '</b></span>' +
+      '<button class="mini-btn' + (on ? '' : ' gold') + '" data-action="' + (on ? 'notify-off' : 'notify-on') + '">' + (on ? 'Tắt' : 'Bật') + '</button></div>';
   }
 
   // ---------- Lớp phủ: bảng hỏi, xem ảnh ----------
@@ -952,15 +1234,19 @@
   // ---------- Vẽ lại ----------
   var main = document.getElementById('app'), tabBar = document.getElementById('tabs'), toastEl = document.getElementById('toast');
   var toastTimer = null;
-  var VIEWS = { today: viewToday, calendar: viewCalendar, tasks: viewTasks, money: viewMoney, form: viewForm, task: viewTaskForm, shopitem: viewShopItem, settings: viewSettings };
-  var FORMS = { form: 1, task: 1, shopitem: 1 };
+  var VIEWS = { today: viewToday, calendar: viewCalendar, tasks: viewTasks, money: viewMoney, form: viewForm, task: viewTaskForm, shopitem: viewShopItem,
+    event: viewEventForm, bill: viewBillForm, focus: viewFocus, settings: viewSettings };
+  var FORMS = { form: 1, task: 1, shopitem: 1, event: 1, bill: 1 };
 
   function tabs() {
-    var cur = FORMS[ui.view] ? ui.back : ui.view === 'settings' ? 'today' : ui.view;
+    var cur = FORMS[ui.view] ? ui.back : ui.view === 'settings' ? 'today' : ui.view === 'focus' ? ui.focusBack : ui.view;
+    var r = S.settings.focusRun;
     function t(v, label, icon) {
       return '<button class="tab" data-action="go" data-view="' + v + '"' + (cur === v ? ' aria-current="page"' : '') + '>' + icon + label + '</button>';
     }
-    return '<div class="tabs-in">' + t('today', 'Hôm nay', I.today) + t('calendar', 'Lịch', I.cal) +
+    return (r && ui.view !== 'focus' ? '<button class="focus-pill" data-action="go" data-view="focus">' + I.focus +
+        '<span>' + (r.phase === 'work' ? 'Đang tập trung' : 'Đang nghỉ') + ' · <b class="num" data-focus-left>' + clock(focusLeft(r)) + '</b></span></button>' : '') +
+      '<div class="tabs-in">' + t('today', 'Hôm nay', I.today) + t('calendar', 'Lịch', I.cal) +
       '<button class="tab add" data-action="add" aria-label="Ghi nhanh: khoản thu chi, việc, món cần mua">' + I.plus + '</button>' +
       t('tasks', 'Việc', I.tasks) + t('money', 'Tiền', I.wallet) + '</div>';
   }
@@ -984,6 +1270,7 @@
     tabBar.hidden = !!FORMS[ui.view];
     hydrateThumbs();
     renderOverlay();
+    updateBadge();
     if (focusId) {
       var el = document.getElementById(focusId);
       if (el) { el.focus(); if (el.setSelectionRange && /^(text|search|)$/.test(el.type || '') ) { try { var n = el.value.length; el.setSelectionRange(n, n); } catch (e) {} } }
@@ -998,6 +1285,7 @@
   }
 
   function go(view) {
+    if (view === 'focus' && ui.view !== 'focus') ui.focusBack = FORMS[ui.view] ? ui.back : ui.view === 'settings' ? 'today' : ui.view;
     if (view === 'settings' && ui.view !== 'settings') { ui.dataMsg = ''; ui.restore = null; ui.setMsg = ''; loadStorageInfo(); }
     if (view === 'money' && ui.view === 'money' && ui.moneyTab !== 'overview') ui.moneyTab = 'overview';
     ui.view = view; ui.confirmDelete = false; ui.errors = {};
@@ -1112,6 +1400,10 @@
     } else if (rec.source === 'task') {
       var t = byId(S.tasks, rec.sourceIds[0]);
       if (t) ops.push(upsert('tasks', Object.assign({}, t, { expenseId: rec.id, prompt: 'logged' })));
+    } else if (rec.source === 'bill') {
+      // Trả hoá đơn: chuyển sang kỳ sau, nhớ số tiền lần này để gợi ý kỳ tới
+      var b = byId(S.bills, rec.sourceIds[0]);
+      if (b) ops.push(upsert('bills', Object.assign({}, b, { paidDue: b.nextDue, nextDue: addMonths(b.nextDue, +b.cycle || 1, b.day), lastPaid: rec.date, lastAmount: rec.amount, lastExpenseId: rec.id })));
     }
     return ops;
   }
@@ -1122,6 +1414,8 @@
     var ops = [drop('expenses', id)];
     S.shopping.forEach(function (it) { if (it.expenseId === id) ops.push(upsert('shopping', Object.assign({}, it, { expenseId: null }))); });
     S.tasks.forEach(function (t) { if (t.expenseId === id) ops.push(upsert('tasks', Object.assign({}, t, { expenseId: null, prompt: 'pending' }))); });
+    // Xoá (hoặc hoàn tác) khoản vừa trả hoá đơn: hoá đơn quay về kỳ chưa trả
+    S.bills.forEach(function (b) { if (b.lastExpenseId === id && b.paidDue) ops.push(upsert('bills', Object.assign({}, b, { nextDue: b.paidDue, paidDue: null, lastExpenseId: null }))); });
     persist(ops);
     removeAttachments('expense', id);
   }
@@ -1191,6 +1485,222 @@
   function deleteTask(id) {
     persist([drop('tasks', id)]);
     removeAttachments('task', id);
+  }
+
+  // ---------- Lịch hẹn ----------
+  function openEvent(ev, preset) {
+    ui.back = backView();
+    if (ev) ui.edraft = { id: ev.id, isNew: false, title: ev.title, date: ev.date, allDay: !!ev.allDay, start: ev.start || '', end: ev.end || '', place: ev.place || '', repeat: ev.repeat || '', remind: ev.remind == null ? '' : String(ev.remind), notes: ev.notes || '' };
+    else ui.edraft = Object.assign({ id: uid(), isNew: true, title: '', date: todayISO(), allDay: false, start: pad(Math.min(new Date().getHours() + 1, 23)) + ':00', end: '', place: '', repeat: '', remind: '30', notes: '' }, preset || {});
+    ui.errors = {}; ui.confirmDelete = false; ui.view = 'event';
+    render(ev ? null : 'e-title'); window.scrollTo(0, 0);
+  }
+  function closeEvent() {
+    var d = ui.edraft;
+    if (d && d.isNew) removeAttachments('event', d.id);
+    ui.edraft = null;
+    go(ui.back);
+  }
+  function saveEvent() {
+    var d = ui.edraft, e = {};
+    if (!d.title.trim()) e.title = 'Ghi tên lịch hẹn.';
+    if (!validDate(d.date)) e.date = 'Chọn ngày hợp lệ.';
+    if (!d.allDay && !/^\d{2}:\d{2}/.test(d.start || '')) e.start = 'Chọn giờ bắt đầu, hoặc tích Cả ngày.';
+    else if (!d.allDay && d.end && d.end.slice(0, 5) <= d.start.slice(0, 5)) e.start = 'Giờ kết thúc phải sau giờ bắt đầu.';
+    ui.errors = e;
+    if (Object.keys(e).length) { render(e.title ? 'e-title' : null); return; }
+    var old = d.isNew ? null : byId(S.events, d.id);
+    var rec = Object.assign({}, old || { id: d.id, createdAt: Date.now() }, {
+      title: d.title.trim(), date: d.date, allDay: !!d.allDay, start: d.allDay ? '' : d.start.slice(0, 5), end: d.allDay ? '' : (d.end || '').slice(0, 5),
+      place: d.place.trim(), repeat: d.repeat, remind: d.remind, notes: d.notes.trim()
+    });
+    persist([upsert('events', rec)]);
+    ui.calMonth = monthOf(rec.date); ui.calDay = rec.date;
+    ui.edraft = null;
+    go(ui.back);
+    showToast(d.isNew ? 'Đã thêm lịch hẹn ' + pickText('date', rec.date) + (rec.start ? ' lúc ' + rec.start : '') : 'Đã lưu thay đổi');
+  }
+
+  // ---------- Hoá đơn định kỳ ----------
+  function openBill(b) {
+    ui.back = backView();
+    if (b) ui.bdraft = { id: b.id, isNew: false, name: b.name, cat: b.cat, amount: b.amount ? String(b.amount) : '', cycle: String(b.cycle || 1), remindDays: String(b.remindDays == null ? 3 : b.remindDays), nextDue: b.nextDue, notes: b.notes || '', paused: !b.active };
+    else ui.bdraft = { id: uid(), isNew: true, name: '', cat: CATS.G && !CATS.G.hidden ? 'G' : SPEND_CATS[0], amount: '', cycle: '1', remindDays: '3', nextDue: '', notes: '', paused: false };
+    ui.errors = {}; ui.confirmDelete = false; ui.view = 'bill';
+    render(b ? null : 'b-name'); window.scrollTo(0, 0);
+  }
+  function saveBill() {
+    var d = ui.bdraft, e = {};
+    if (!d.name.trim()) e.name = 'Ghi tên hoá đơn.';
+    if (+d.amount > MAX_AMOUNT) e.amount = 'Số tiền quá lớn.';
+    if (!validDate(d.nextDue)) e.nextDue = 'Chọn hạn trả kỳ tới.';
+    ui.errors = e;
+    if (Object.keys(e).length) { render(e.name ? 'b-name' : null); return; }
+    var old = d.isNew ? null : byId(S.bills, d.id);
+    var rec = Object.assign({}, old || { id: d.id, createdAt: Date.now(), lastPaid: null, lastAmount: 0, lastExpenseId: null, paidDue: null }, {
+      name: d.name.trim(), cat: d.cat, amount: +d.amount || 0, cycle: +d.cycle || 1, remindDays: +d.remindDays || 0,
+      nextDue: d.nextDue, day: +d.nextDue.slice(8, 10), notes: d.notes.trim(), active: !d.paused
+    });
+    // Sửa số tiền ước tính thì kỳ tới gợi ý theo số mới
+    if (old && rec.amount !== old.amount) rec.lastAmount = 0;
+    persist([upsert('bills', rec)]);
+    ui.bdraft = null;
+    go(ui.back);
+    showToast(d.isNew ? 'Đã thêm hoá đơn ' + rec.name + ', hạn ' + pickText('date', rec.nextDue) : 'Đã lưu thay đổi');
+  }
+  function payBill(b) {
+    var cat = CATS[b.cat] && !CATS[b.cat].hidden ? b.cat : 'K';
+    openExpense(null, { cat: cat, amount: billAmount(b) ? String(billAmount(b)) : '', date: todayISO(),
+      content: cut(b.name + ' tháng ' + (+b.nextDue.slice(5, 7)) + '/' + b.nextDue.slice(0, 4), 120), source: 'bill', sourceIds: [b.id] });
+  }
+
+  // ---------- Tập trung: đếm theo giờ kết thúc, nên tắt màn hình hay đóng app vẫn đúng ----------
+  var audioCtx = null;
+  function unlockAudio() {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (AC && !audioCtx) audioCtx = new AC();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {}
+  }
+  function beep() {
+    try {
+      if (!audioCtx) return;
+      [0, 0.4, 0.8].forEach(function (t) {
+        var o = audioCtx.createOscillator(), g = audioCtx.createGain(), t0 = audioCtx.currentTime + t;
+        o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
+        g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3);
+        o.start(t0); o.stop(t0 + 0.32);
+      });
+    } catch (e) {}
+  }
+  function focusRecord(r, minutes, endedAt) {
+    if (minutes < 1) return [];
+    return [upsert('focus', { id: uid(), taskId: r.taskId || null, date: isoOf(new Date(endedAt)), minutes: minutes, endedAt: endedAt })];
+  }
+  function setFocus(r, ops) {
+    S.settings.focusRun = r;
+    persist((ops || []).concat(metaOp('settings')));
+  }
+  function focusStart() {
+    var w = ui.focusWork || S.settings.focusWork || 60, br = ui.focusBreak || S.settings.focusBreak || 5, now = Date.now();
+    unlockAudio();
+    setFocus({ taskId: ui.focusTask || null, phase: 'work', work: w, brk: br, startedAt: now, endsAt: now + w * 60000, pausedLeft: null });
+    render();
+  }
+  function focusStop(doneTask) {
+    var r = S.settings.focusRun;
+    if (!r) return;
+    var ops = [], mins = 0;
+    if (r.phase === 'work') { mins = Math.floor((r.work * 60000 - focusLeft(r)) / 60000); ops = focusRecord(r, mins, Date.now()); }
+    setFocus(null, ops);
+    if (doneTask && r.taskId && byId(S.tasks, r.taskId) && isOpen(byId(S.tasks, r.taskId))) { toggleTask(r.taskId); return; }
+    render();
+    showToast(mins >= 1 ? 'Đã lưu ' + minText(mins) + ' tập trung' : 'Đã kết thúc phiên');
+  }
+  // Chạy mỗi giây: hết giờ thì chuyển làm → nghỉ → xong (kể cả khi hết giờ lúc app đang đóng)
+  function focusTick() {
+    var r = S.settings.focusRun;
+    if (!r) return;
+    var now = Date.now(), ops = [], changed = false;
+    while (r && r.pausedLeft == null && now >= r.endsAt) {
+      var fresh = now - r.endsAt < 120000; // chỉ kêu nếu vừa hết giờ, không kêu cho phiên đã qua lâu
+      if (r.phase === 'work') {
+        ops = ops.concat(focusRecord(r, r.work, r.endsAt));
+        if (fresh) alertUser('fw-' + r.startedAt, 'Hết ' + r.work + ' phút tập trung', 'Nghỉ ' + r.brk + ' phút rồi làm tiếp.', true);
+        r = Object.assign({}, r, { phase: 'break', endsAt: r.endsAt + r.brk * 60000 });
+      } else {
+        if (fresh) alertUser('fb-' + r.startedAt, 'Hết giờ nghỉ', 'Mở app bấm Bắt đầu để làm phiên mới.', true);
+        r = null;
+      }
+      changed = true;
+    }
+    if (changed) {
+      setFocus(r, ops);
+      if (!FORMS[ui.view]) render(); // đang nhập form thì không vẽ lại
+      return;
+    }
+    var left = focusLeft(r), total = (r.phase === 'work' ? r.work : r.brk) * 60000;
+    Array.prototype.forEach.call(document.querySelectorAll('#focus-clock, [data-focus-left]'), function (el) { el.textContent = clock(left); });
+    var ring = document.getElementById('focus-ring');
+    if (ring) ring.style.setProperty('--p', Math.round((1 - left / total) * 1000) / 10);
+  }
+
+  // ---------- Nhắc việc theo quy tắc (khi app đang mở) ----------
+  function sysNotify(key, title, body) {
+    if (!S.settings.notify || !window.Notification || Notification.permission !== 'granted') return;
+    var opt = { body: body, tag: key, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png' };
+    var sw = navigator.serviceWorker;
+    (sw && sw.getRegistration ? sw.getRegistration() : Promise.resolve(null)).then(function (reg) {
+      if (reg && reg.showNotification) return reg.showNotification(title, opt);
+      new Notification(title, opt);
+    }).catch(function () {});
+  }
+  function alertUser(key, title, body, loud) {
+    var n = S.settings.notified || (S.settings.notified = {});
+    if (n[key]) return;
+    n[key] = Date.now();
+    persist([metaOp('settings')]);
+    showToast(title + ' · ' + body);
+    if (loud) { beep(); try { if (navigator.vibrate) navigator.vibrate([300, 150, 300]); } catch (e) {} }
+    sysNotify(key, title, body);
+  }
+  function digestText() {
+    var today = todayISO(), ev = eventsOn(today);
+    var due = S.tasks.filter(function (t) { return isOpen(t) && t.due && t.due <= today; }).length;
+    var bills = S.bills.filter(billSoon).length, bits = [];
+    if (ev.length) bits.push(ev.length + ' lịch hẹn' + (ev[0].start && !ev[0].allDay ? ' (sớm nhất ' + ev[0].start + ')' : ''));
+    if (due) bits.push(due + ' việc đến hạn');
+    if (bills) bits.push(bills + ' hoá đơn sắp đến hạn');
+    return bits.length ? 'Hôm nay có ' + bits.join(', ') + '.' : null;
+  }
+  function eveningText() {
+    var today = todayISO(), spent = 0;
+    S.expenses.forEach(function (t) { if (t.date === today && t.type === 'chi') spent += t.amount; });
+    var done = S.tasks.filter(function (t) { return !isOpen(t) && t.doneAt && isoOf(new Date(t.doneAt)) === today; }).length;
+    return 'Hôm nay chi ' + money(spent) + ' đ, xong ' + done + ' việc. Mở app xem tổng kết.';
+  }
+  function scheduledAlerts() {
+    var out = [], today = todayISO();
+    [today, addDays(today, 1)].forEach(function (iso) {
+      eventsOn(iso).forEach(function (ev) {
+        var at = eventRemindAt(ev, iso);
+        if (at != null) out.push({ key: 'ev-' + ev.id + '-' + iso, at: at, loud: true, title: ev.title,
+          body: (iso === today ? 'Hôm nay' : 'Ngày mai') + ' · ' + eventTime(ev) + (ev.place ? ' · ' + ev.place : '') });
+      });
+    });
+    S.tasks.forEach(function (t) {
+      if (isOpen(t) && t.due === today && t.time) out.push({ key: 'tk-' + t.id + '-' + today, at: atTime(today, t.time), loud: true, title: 'Đến giờ: ' + t.title, body: (TAGS[t.tag] || 'Việc') + ' · ' + t.time });
+    });
+    S.bills.forEach(function (b) {
+      if (billSoon(b)) out.push({ key: 'bill-' + b.id + '-' + b.nextDue + '-' + today, at: atTime(today, '08:00'), title: 'Hoá đơn: ' + b.name,
+        body: billDueText(b) + (billAmount(b) ? ' · ~' + money(billAmount(b)) + ' đ' : '') });
+    });
+    var dg = digestText();
+    if (dg) out.push({ key: 'digest-' + today, at: atTime(today, S.settings.digestTime || '07:30'), title: 'Chào buổi sáng', body: dg });
+    out.push({ key: 'sum-' + today, at: atTime(today, S.settings.summaryTime || '22:00'), title: 'Tổng kết ngày', body: eveningText() });
+    return out;
+  }
+  // Báo khi vừa tới giờ (trong 30 phút); mở app trễ hơn thì xem ở tab Hôm nay, không báo dồn
+  function checkAlerts() {
+    var now = Date.now(), n = S.settings.notified || {};
+    scheduledAlerts().forEach(function (a) {
+      if (now >= a.at && now - a.at < 30 * 60000 && !n[a.key]) alertUser(a.key, a.title, a.body, a.loud);
+    });
+  }
+  function pruneNotified() {
+    var n = S.settings.notified || {}, old = Date.now() - 3 * 864e5, cut0 = false;
+    Object.keys(n).forEach(function (k) { if (n[k] < old) { delete n[k]; cut0 = true; } });
+    if (cut0) persist([metaOp('settings')]);
+  }
+  // Số trên biểu tượng app (Android, máy tính): việc đến hạn + hoá đơn sắp đến hạn
+  function updateBadge() {
+    try {
+      if (!navigator.setAppBadge) return;
+      var today = todayISO();
+      var n = S.tasks.filter(function (t) { return isOpen(t) && t.due && t.due <= today; }).length + S.bills.filter(billSoon).length;
+      (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(function () {});
+    } catch (e) {}
   }
 
   // ---------- Mua sắm ----------
@@ -1489,7 +1999,8 @@
   }
   function backup(withFiles) {
     var name = 'MyLifeHub_saoluu_' + todayISO() + (withFiles ? '_kemtep' : '') + '.json';
-    var data = { expenses: S.expenses, budgets: S.budgets, categories: S.categories, tasks: S.tasks, shopping: S.shopping, groups: S.groups, attachments: S.attachments, settings: S.settings, prices: S.prices };
+    var data = { expenses: S.expenses, budgets: S.budgets, categories: S.categories, tasks: S.tasks, shopping: S.shopping, groups: S.groups, attachments: S.attachments,
+      events: S.events, bills: S.bills, focus: S.focus, settings: Object.assign({}, S.settings, { focusRun: null, notified: {} }), prices: S.prices };
     ui.dataMsg = withFiles ? 'Đang gom tệp đính kèm…' : ''; render();
     var files = {};
     var collect = withFiles ? S.attachments.reduce(function (p, a) {
@@ -1532,7 +2043,9 @@
           ui.restore = { kind: 'v1', data: { expenses: raw.items.map(Store.fromLegacyItem), budgets: raw.budgets && typeof raw.budgets === 'object' ? raw.budgets : {} }, savedAt: raw.savedAt };
         } else if (raw && raw.app === 'mylife-hub' && raw.version === 2 && raw.data && Array.isArray(raw.data.expenses)) {
           var d = raw.data;
-          ['categories', 'tasks', 'shopping', 'groups', 'attachments'].forEach(function (k) { if (!Array.isArray(d[k])) d[k] = []; });
+          ['categories', 'tasks', 'shopping', 'groups', 'attachments', 'events', 'bills', 'focus'].forEach(function (k) { if (!Array.isArray(d[k])) d[k] = []; });
+          d.events = d.events.filter(function (x) { return x && typeof x.id === 'string' && validDate(x.date); });
+          d.bills = d.bills.filter(function (x) { return x && typeof x.id === 'string' && validDate(x.nextDue); });
           (d.categories.length ? d.categories : Store.defaults.categories).forEach(function (c) { cats[c.code] = 1; });
           if (d.expenses.some(function (t) { return !validItem(t, cats); })) throw new Error('items');
           ui.restore = { kind: 'v2', data: d, files: raw.files || null, savedAt: raw.savedAt, fileCount: raw.files ? Object.keys(raw.files).filter(function (k) { return !/:t$/.test(k); }).length : 0 };
@@ -1555,7 +2068,8 @@
       return;
     }
     var d = r.data;
-    next = { expenses: d.expenses, budgets: d.budgets || {}, categories: d.categories, tasks: d.tasks, shopping: d.shopping, groups: d.groups, attachments: d.attachments, settings: d.settings || {}, prices: d.prices || {} };
+    next = { expenses: d.expenses, budgets: d.budgets || {}, categories: d.categories, tasks: d.tasks, shopping: d.shopping, groups: d.groups, attachments: d.attachments,
+      events: d.events, bills: d.bills, focus: d.focus, settings: d.settings || {}, prices: d.prices || {} };
     if (!r.files) { finishRestore(next, null, true); return; }
     var files = {};
     Promise.all(Object.keys(r.files).map(function (k) {
@@ -1569,7 +2083,7 @@
     }).then(function (s) {
       S = s; refreshCats();
       ui.month = latestMonth(); ui.year = ui.month.slice(0, 4);
-      ui.dataMsg = 'Đã khôi phục ' + S.expenses.length + ' khoản thu chi, ' + S.tasks.length + ' việc.';
+      ui.dataMsg = 'Đã khôi phục ' + S.expenses.length + ' khoản thu chi, ' + S.tasks.length + ' việc, ' + S.events.length + ' lịch hẹn, ' + S.bills.length + ' hoá đơn.';
       render();
     }, function () { ui.dataMsg = 'Khôi phục không thành công, dữ liệu cũ vẫn giữ nguyên.'; render(); });
   }
@@ -1627,17 +2141,19 @@
 
       case 'add': {
         var date = b.getAttribute('data-date');
-        if (ui.view === 'form' || ui.view === 'task') break;
+        if (FORMS[ui.view]) break;
         openExpense(null, date ? { date: date } : null); break;
       }
       case 'add-kind': {
-        var k = b.getAttribute('data-k'), cur = ui.view === 'task' ? 'task' : 'expense';
+        var k = b.getAttribute('data-k'), cur = ui.view === 'task' ? 'task' : ui.view === 'event' ? 'event' : 'expense';
         if (k === cur) break;
         var keepBack = ui.back;
         if (ui.view === 'form') { if (ui.draft && ui.draft.isNew) removeAttachments('expense', ui.draft.id); ui.draft = null; }
         if (ui.view === 'task') { if (ui.tdraft && ui.tdraft.isNew) removeAttachments('task', ui.tdraft.id); ui.tdraft = null; }
+        if (ui.view === 'event') { if (ui.edraft && ui.edraft.isNew) removeAttachments('event', ui.edraft.id); ui.edraft = null; }
         ui.view = keepBack;
         if (k === 'task') openTask(null);
+        else if (k === 'event') openEvent(null);
         else if (k === 'expense') openExpense(null);
         else { ui.taskFilter = 'shop'; go('tasks'); var inp = document.getElementById('shop-new'); if (inp) inp.focus(); }
         ui.back = keepBack;
@@ -1647,7 +2163,8 @@
       case 'close-form':
         if (ui.view === 'form') closeExpense();
         else if (ui.view === 'task') closeTask();
-        else { ui.sdraft = null; go(ui.back); }
+        else if (ui.view === 'event') closeEvent();
+        else { ui.sdraft = null; ui.bdraft = null; go(ui.back); }
         break;
       case 'cat': ui.draft.cat = b.getAttribute('data-cat'); delete ui.errors.cat; render(); break;
       case 'amt': applyAmountOp(b.getAttribute('data-op')); break;
@@ -1719,6 +2236,67 @@
         if (t) { persist([upsert('tasks', Object.assign({}, t, { prompt: 'skipped' }))]); render(); }
         break;
       }
+
+      // Lịch hẹn
+      case 'event-new': openEvent(null, b.getAttribute('data-date') ? { date: b.getAttribute('data-date') } : null); break;
+      case 'event-edit': it = byId(S.events, id); if (it) openEvent(it); break;
+      case 'e-set': ui.edraft[b.getAttribute('data-f')] = b.getAttribute('data-v'); delete ui.errors.date; render(); break;
+      case 'event-delete': {
+        var et = ui.edraft.title;
+        persist([drop('events', ui.edraft.id)]); removeAttachments('event', ui.edraft.id); ui.edraft = null;
+        go(ui.back); showToast('Đã xoá lịch hẹn “' + cut(et, 30) + '”'); break;
+      }
+
+      // Hoá đơn
+      case 'bill-new': openBill(null); break;
+      case 'bill-edit': it = byId(S.bills, id); if (it) openBill(it); break;
+      case 'bill-pay': it = byId(S.bills, id); if (it) payBill(it); break;
+      case 'b-preset': {
+        var pr = BILL_PRESETS[+b.getAttribute('data-i')];
+        ui.bdraft.name = pr[0];
+        if (CATS[pr[1]] && !CATS[pr[1]].hidden) ui.bdraft.cat = pr[1];
+        delete ui.errors.name; render(); break;
+      }
+      case 'bill-skip': {
+        it = byId(S.bills, ui.bdraft.id);
+        if (it) {
+          var nd = addMonths(it.nextDue, +it.cycle || 1, it.day);
+          persist([upsert('bills', Object.assign({}, it, { nextDue: nd, paidDue: null, lastExpenseId: null }))]);
+          ui.bdraft = null; go(ui.back); showToast('Đã bỏ qua kỳ này. Kỳ tới: ' + pickText('date', nd));
+        }
+        break;
+      }
+      case 'bill-delete': {
+        var bn = ui.bdraft.name;
+        persist([drop('bills', ui.bdraft.id)]); ui.bdraft = null;
+        go(ui.back); showToast('Đã xoá hoá đơn “' + cut(bn, 30) + '”'); break;
+      }
+
+      // Tập trung
+      case 'focus-task': ui.focusTask = id; ui.tdraft = null; ui.view = ui.back; go('focus'); break;
+      case 'focus-w': ui.focusWork = +b.getAttribute('data-v'); render(); break;
+      case 'focus-b': ui.focusBreak = +b.getAttribute('data-v'); render(); break;
+      case 'focus-start': focusStart(); break;
+      case 'focus-pause': { var fr = S.settings.focusRun; if (fr) { setFocus(Object.assign({}, fr, { pausedLeft: Math.max(0, fr.endsAt - Date.now()) })); render(); } break; }
+      case 'focus-resume': { var fr2 = S.settings.focusRun; if (fr2) { unlockAudio(); setFocus(Object.assign({}, fr2, { endsAt: Date.now() + fr2.pausedLeft, pausedLeft: null })); render(); } break; }
+      case 'focus-stop': focusStop(false); break;
+      case 'focus-done': focusStop(true); break;
+      case 'focus-again': {
+        var fr3 = S.settings.focusRun, nw = Date.now();
+        if (fr3) { unlockAudio(); setFocus(Object.assign({}, fr3, { phase: 'work', startedAt: nw, endsAt: nw + fr3.work * 60000, pausedLeft: null })); render(); }
+        break;
+      }
+
+      // Thông báo
+      case 'notify-on':
+        if (!window.Notification) break;
+        Promise.resolve(Notification.requestPermission()).then(function (pm) {
+          S.settings.notify = pm === 'granted'; persist([metaOp('settings')]); render();
+          if (pm === 'granted') sysNotify('test', 'MyLife Hub', 'Đã bật thông báo. App sẽ nhắc lịch hẹn, hoá đơn và hết giờ tập trung.');
+        });
+        unlockAudio();
+        break;
+      case 'notify-off': S.settings.notify = false; persist([metaOp('settings')]); render(); break;
 
       // Mua sắm
       case 'shop-focus': { var el = document.getElementById('shop-new'); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } break; }
@@ -1805,6 +2383,15 @@
     if (k) { render(); showToast('Đã lưu hạn mức ' + catOf(k).name); return; }
     var tk = el.getAttribute('data-tinput');
     if (tk === 'repeat' || tk === 'costCat' || tk === 'due') { ui.tdraft[tk] = el.value; if (tk !== 'costCat') render(); return; }
+    var ek = el.getAttribute('data-einput');
+    if (ek) {
+      if (ek === 'allDay') ui.edraft.allDay = el.checked; else ui.edraft[ek] = el.value;
+      if (ek === 'date' || ek === 'allDay' || ek === 'repeat') { delete ui.errors.date; delete ui.errors.start; render(); }
+      return;
+    }
+    var bi = el.getAttribute('data-binput');
+    if (bi) { if (bi === 'paused') ui.bdraft.paused = el.checked; else if (bi !== 'amount') ui.bdraft[bi] = el.value; if (bi === 'nextDue') { delete ui.errors.nextDue; render(); } return; }
+    if (el.getAttribute('data-focus') === 'task') { ui.focusTask = el.value; return; }
     var sk = el.getAttribute('data-sinput');
     if (sk === 'group' || sk === 'newCat') { ui.sdraft[sk] = el.value; render(sk === 'group' && el.value === '__new' ? 's-gname' : null); return; }
     if (el.getAttribute('data-input') === 'date' && ui.view === 'form') { ui.draft.date = el.value; render(); return; }
@@ -1826,6 +2413,8 @@
     }
     var st = el.getAttribute('data-setting');
     if (st === 'summaryTime' && /^\d{2}:\d{2}$/.test(el.value)) { S.settings.summaryTime = el.value; persist([metaOp('settings')]); showToast('Thẻ Tổng kết ngày hiện từ ' + el.value); }
+    if (st === 'digestTime' && /^\d{2}:\d{2}$/.test(el.value)) { S.settings.digestTime = el.value; persist([metaOp('settings')]); showToast('Bản tin buổi sáng lúc ' + el.value); }
+    if (st === 'focusWork' || st === 'focusBreak') { S.settings[st] = +el.value; ui[st] = 0; persist([metaOp('settings')]); showToast('Đã lưu'); }
   });
 
   function moneyInput(el) {
@@ -1846,6 +2435,10 @@
       else if (tk !== 'repeat' && tk !== 'costCat') ui.tdraft[tk] = el.value;
       return;
     }
+    var ei = el.getAttribute('data-einput');
+    if (ei) { if (ei !== 'allDay') ui.edraft[ei] = el.value; return; }
+    var bin = el.getAttribute('data-binput');
+    if (bin) { if (bin === 'amount') { ui.bdraft.amount = moneyInput(el); delete ui.errors.amount; } else if (bin !== 'paused') ui.bdraft[bin] = el.value; return; }
     var sk = el.getAttribute('data-sinput');
     if (sk) {
       if (sk === 'price') ui.sdraft.price = moneyInput(el);
@@ -1892,6 +2485,8 @@
     if (id === 'txform') saveExpense();
     else if (id === 'taskform') saveTask();
     else if (id === 'shopform') saveShopItem();
+    else if (id === 'eventform') saveEvent();
+    else if (id === 'billform') saveBill();
     else if (id === 'shopadd') { var v = document.getElementById('shop-new').value; if (v.trim()) addShopping(v); }
     else if (id === 'catadd') addCategory();
     else if (id === 'groupadd') addGroup();
@@ -1905,8 +2500,16 @@
 
   // Mở lại app sau nửa đêm hoặc sau 22:00: vẽ lại để thẻ Hôm nay / Tổng kết đúng giờ
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && S && (ui.view === 'today' || ui.view === 'calendar')) render();
+    if (document.hidden || !S) return;
+    focusTick(); checkAlerts();
+    if (ui.view === 'today' || ui.view === 'calendar' || ui.view === 'focus') render();
   });
+  var ticks = 0;
+  setInterval(function () {
+    if (!S) return;
+    focusTick();
+    if (++ticks % 20 === 0) checkAlerts();
+  }, 1000);
 
   // ---------- Khởi động ----------
   main.innerHTML = '<p class="lead center" style="padding-top:40vh">Đang mở dữ liệu…</p>';
@@ -1921,7 +2524,9 @@
     render();
     if (q && q[1] === 'expense') openExpense(null);
     else if (q && q[1] === 'task') openTask(null);
+    else if (q && q[1] === 'event') openEvent(null);
     else if (q && q[1] === 'shop') { ui.taskFilter = 'shop'; go('tasks'); }
     if (Store.migrated) showToast('Đã chuyển ' + S.expenses.length + ' khoản thu chi sang MyLife Hub, không mất khoản nào.');
+    pruneNotified(); focusTick(); checkAlerts();
   });
 })();

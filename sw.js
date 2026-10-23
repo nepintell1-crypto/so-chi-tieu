@@ -1,6 +1,6 @@
 /* Service worker: lưu sẵn các file của app để mở được cả khi không có mạng.
    Mỗi lần sửa app, tăng VERSION để điện thoại tải bản mới. */
-var VERSION = 'mylife-hub-v2';
+var VERSION = 'mylife-hub-v3';
 var SHELL = [
   './', 'index.html', 'styles.css', 'store.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
@@ -41,4 +41,13 @@ self.addEventListener('fetch', function (e) {
     return;
   }
   e.respondWith(caches.match(req).then(function (hit) { return hit || fetch(req); }));
+});
+
+// Bấm vào thông báo nhắc việc: mở lại app (nếu đang mở thì chuyển sang)
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+    for (var i = 0; i < list.length; i++) if ('focus' in list[i]) return list[i].focus();
+    return self.clients.openWindow ? self.clients.openWindow('./') : null;
+  }));
 });

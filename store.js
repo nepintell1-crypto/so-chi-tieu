@@ -5,12 +5,12 @@
 (function () {
   'use strict';
 
-  var DB_NAME = 'mylifehub', DB_VER = 1;
+  var DB_NAME = 'mylifehub', DB_VER = 2; // v2: thêm lịch hẹn, hoá đơn định kỳ, phiên tập trung
   var LEGACY_KEY = 'sochitieu.v1', LOCAL_KEY = 'mylife.v2';
   var SCHEMA = 2;
   // Bảng có khoá nằm trong bản ghi; 'meta' (cài đặt, giá đã nhớ) và 'files' (nội dung tệp) dùng khoá riêng
-  var STORES = { expenses: 'id', budgets: 'month', categories: 'code', tasks: 'id', shopping: 'id', groups: 'id', attachments: 'id' };
-  var LISTS = ['expenses', 'categories', 'tasks', 'shopping', 'groups', 'attachments'];
+  var STORES = { expenses: 'id', budgets: 'month', categories: 'code', tasks: 'id', shopping: 'id', groups: 'id', attachments: 'id', events: 'id', bills: 'id', focus: 'id' };
+  var LISTS = ['expenses', 'categories', 'tasks', 'shopping', 'groups', 'attachments', 'events', 'bills', 'focus'];
 
   var DEFAULT_CATEGORIES = [
     { code: '+', name: 'Thu nhập', short: 'Thu nhập', kind: 'thu', color: 'var(--cat-plus)' },
@@ -30,7 +30,8 @@
     { id: 'g-other', name: 'Khác', cat: 'K', keywords: [] }
   ].map(function (g, i) { g.sort = i; g.hidden = false; g.builtin = g.id === 'g-other'; return g; });
 
-  var DEFAULT_SETTINGS = { summaryTime: '22:00', budgetWarn: 0.8, focusWork: 60, focusBreak: 5, shopChoice: 'single', migratedFrom: null };
+  var DEFAULT_SETTINGS = { summaryTime: '22:00', digestTime: '07:30', budgetWarn: 0.8, focusWork: 60, focusBreak: 5, focusRun: null,
+    notify: false, notified: {}, shopChoice: 'single', migratedFrom: null };
 
   function req(r) { return new Promise(function (ok, fail) { r.onsuccess = function () { ok(r.result); }; r.onerror = function () { fail(r.error); }; }); }
   function txDone(tx) {
@@ -51,14 +52,20 @@
         Object.keys(STORES).forEach(function (s) { if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: STORES[s] }); });
         ['meta', 'files'].forEach(function (s) { if (!d.objectStoreNames.contains(s)) d.createObjectStore(s); });
       };
-      r.onsuccess = function () { ok(r.result); };
+      r.onsuccess = function () {
+        var d = r.result;
+        // Một bản app mới hơn cần nâng cấp bộ nhớ: đóng kết nối này để bản kia mở được
+        d.onversionchange = function () { d.close(); };
+        ok(d);
+      };
       r.onerror = function () { fail(r.error); };
-      r.onblocked = function () { fail(new Error('blocked')); };
+      // Thẻ app cũ còn mở: chờ nó đóng (không chuyển sang bộ nhớ tạm, tránh hiện dữ liệu cũ)
+      r.onblocked = function () {};
     });
   }
 
   function emptyState() {
-    return { expenses: [], budgets: {}, categories: [], tasks: [], shopping: [], groups: [], attachments: [], settings: {}, prices: {} };
+    return { expenses: [], budgets: {}, categories: [], tasks: [], shopping: [], groups: [], attachments: [], events: [], bills: [], focus: [], settings: {}, prices: {} };
   }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
 
@@ -114,6 +121,7 @@
   }
 
   function fillDefaults(s) {
+    LISTS.forEach(function (k) { if (!Array.isArray(s[k])) s[k] = []; });
     if (!s.categories.length) s.categories = clone(DEFAULT_CATEGORIES);
     if (!s.groups.length) s.groups = clone(DEFAULT_GROUPS);
     s.settings = Object.assign({}, DEFAULT_SETTINGS, s.settings || {});
@@ -269,6 +277,7 @@
 
     legacyState: legacyState,
     fromLegacyItem: fromLegacyItem,
+    lists: LISTS,
     defaults: { categories: DEFAULT_CATEGORIES, groups: DEFAULT_GROUPS, settings: DEFAULT_SETTINGS }
   };
 
